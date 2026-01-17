@@ -6,106 +6,125 @@ from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 from st_click_detector import click_detector
 import html
+import traceback
 from openai import OpenAI
 
 # --- 設定1: Googleスプレッドシート連携 ---
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 
 def get_gspread_client():
-    # Secretsから情報を取得
     creds_dict = dict(st.secrets["gcp_service_account"])
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     client = gspread.authorize(creds)
     return client
 
 # --- 設定2: OpenAI (ChatGPT) 翻訳機能 ---
-def translate_with_gpt(text):
-    # SecretsからOpenAIの鍵を取得
+def translate_with_gpt(text: str) -> str:
     client = OpenAI(api_key=st.secrets["openai"]["api_key"])
-    
-    # 翻訳の実行
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {"role": "system", "content": "You are a professional translator. Translate the following English word or phrase into Japanese directly. Output ONLY the Japanese meaning. No explanations."},
-            {"role": "user", "content": text}
-        ]
+            {
+                "role": "system",
+                "content": (
+                    "You are a professional translator. Translate the following English word or phrase "
+                    "into Japanese directly. Output ONLY the Japanese meaning."
+                ),
+            },
+            {"role": "user", "content": text},
+        ],
     )
     return response.choices[0].message.content.strip()
 
-# --- セッション状態の初期化 ---
-if 'last_clicked' not in st.session_state:
-    st.session_state.last_clicked = ""
+# --- セッションとメイン画面 ---
+if "last_clicked_id" not in st.session_state:
+    st.session_state.last_clicked_id = ""
 
-# --- アプリのメイン画面 ---
 st.title("🤖 AI English PDF Note (Final)")
 
-# サイドバー: PDFアップロード
 st.sidebar.header("1. Upload PDF")
 uploaded_file = st.sidebar.file_uploader("Choose a PDF file", type="pdf")
 
 if uploaded_file is not None:
-    # PDF読み込み
-    reader = PdfReader(uploaded_file)
-    total_pages = len(reader.pages)
-    page_num = st.sidebar.number_input(f"Page (1-{total_pages})", min_value=1, max_value=total_pages, value=1)
-    
-    # テキスト抽出
-    page = reader.pages[page_num - 1]
-    raw_text = page.extract_text()
-    
-    if raw_text:
-        st.subheader("📖 Tap a word to AI Translate")
-        
-        # HTML化処理
-        safe_text = html.escape(raw_text)
-        words = safe_text.split()
-        
-        html_content = """
-        <style>
-            .word-link { color: #333; text-decoration: none; cursor: pointer; }
-            .word-link:hover { color: #e04400; text-decoration: underline; background-color: #f0f0f0;}
-        </style>
-        <div style='font-size: 16px; line-height: 1.8; padding: 10px; border: 1px solid #ddd; border-radius: 5px;'>
-        """
-        for word in words:
-            # 単語をリンク化
-            html_content += f"<a href='#' id='{word}' class='word-link'>{word}</a> "
-        
-        html_content += "</div>"
+    try:
+        reader = PdfReader(uploaded_file)
+        total_pages = len(reader.pages)
 
-        # クリック検知
-        clicked_word = click_detector(html_content)
+        page_num = st.sidebar.number_input(
+            "Page", min_value=1, max_value=total_pages, value=1, step=1
+        )
+        page = reader.pages[page_num - 1]
+        raw_text = page.extract_text()
 
-        # クリック時の処理
-        if clicked_word and clicked_word != st.session_state.last_clicked:
-            st.session_state.last_clicked = clicked_word
-            clean_word = clicked_word.strip(".,!?\"'()[]")
-            
-            if clean_word:
-                with st.spinner(f"🤖 AI Translating '{clean_word}'..."):
+        if raw_text:
+            st.subheader("📖 Tap a word to AI Translate")
+
+            # 🔥 重要: idは安全な連番にして、表示テキストだけescapeする
+            words = raw_text.split()
+
+            html_content = """
+            <style>
+                .word-link { color: #333; text-decoration: none; cursor: pointer; }
+                .word-link:hover { color: #e04400; text-decoration: underline; background-color: #f0f0f0;}
+            </style>
+            <div style='font-size: 16px; line-height: 1.8; padding: 10px; border: 1px solid #ddd; border-radius: 5px;'>
+            """
+
+            for i, w in enumerate(words):
+                disp = html.escape(w)
+                html_content += f"<a href='#' id='w{i}' class='word-link'>{disp}</a> "
+            html_content += "</div>"
+
+            clicked_id = click_detector(html_content)
+
+            # クリックが安定するように「id」で判定
+            if clicked_id and clicked_id != st.session_state.last_clicked_id:
+                st.session_state.last_clicked_id = clicked_id
+
+                if clicked_id.startswith("w"):
                     try:
-                        # 1. ChatGPTで翻訳 (ここが新しい箇所！)
-                        translated_text = translate_with_gpt(clean_word)
-                        
-                        # 2. スプレッドシート保存
-                        client = get_gspread_client()
-                        sheet_name = st.secrets["sheet_config"]["sheet_name"]
-                        sheet = client.open(sheet_name).sheet1
-                        
-                        date_str = datetime.now().strftime("%Y-%m-%d")
-                        row = [clean_word, translated_text, date_str]
-                        sheet.append_row(row)
-                        
-                        # 成功メッセージ
-                        st.toast(f"✅ Saved: {clean_word} = {translated_text}", icon="🎉")
-                        st.info(f"**{clean_word}**: {translated_text}")
-                        
-                    except Exception as e:
-                        # エラー詳細を表示
-                        st.error(f"Error details: {e}")
-    else:
-        st.warning("Could not extract text from this page.")
+                        idx = int(clicked_id[1:])
+                        clicked_word = words[idx]
+                    except Exception:
+                        clicked_word = ""
 
+                    clean_word = clicked_word.strip(".,!?\"'()[]{}:;")
+
+                    if clean_word:
+                        with st.spinner(f"🤖 AI Translating '{clean_word}'..."):
+                            try:
+                                translated_text = translate_with_gpt(clean_word)
+
+                                client = get_gspread_client()
+                                sheet_name = st.secrets["sheet_config"]["sheet_name"]
+                                sheet = client.open(sheet_name).sheet1
+
+                                date_str = datetime.now().strftime("%Y-%m-%d")
+                                row = [clean_word, translated_text, date_str]
+                                sheet.append_row(row)
+
+                                st.toast(f"✅ Saved: {clean_word} = {translated_text}", icon="🎉")
+                                st.info(f"**{clean_word}**: {translated_text}")
+
+                            except Exception as e:
+                                # ✅ ここが「<Response [200]>」問題を潰す本体
+                                st.error(f"{type(e).__name__}: {e!r}")
+                                st.code(traceback.format_exc())
+
+                                # 例外オブジェクトがResponseっぽいときは中身を出す
+                                if hasattr(e, "status_code") and hasattr(e, "text"):
+                                    st.write("status:", getattr(e, "status_code", None))
+                                    st.code(getattr(e, "text", "")[:3000])
+
+                                # Streamlit標準の例外表示（便利）
+                                st.exception(e)
+                else:
+                    st.warning("Clicked value was unexpected. (id format mismatch)")
+        else:
+            st.warning("No text found.")
+    except Exception as e:
+        st.error(f"{type(e).__name__}: {e!r}")
+        st.code(traceback.format_exc())
+        st.exception(e)
 else:
-    st.info("👈 Please upload a PDF from the sidebar.")
+    st.info("👈 Upload PDF to start.")
