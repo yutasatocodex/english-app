@@ -71,7 +71,7 @@ if uploaded_file is not None:
                 with st.spinner(f"Translating '{clean_word}'..."):
                     try:
                         # 翻訳
-                        translator = MyMemoryTranslator(source='en', target='ja')
+                        translator = MyMemoryTranslator(source='en-US', target='ja-JP')
                         translated_text = translator.translate(clean_word)
                         
                         # スプレッドシート保存
