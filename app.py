@@ -25,17 +25,29 @@ def get_gspread_client():
     except:
         return None
 
-# --- 設定: OpenAI翻訳 ---
-def translate_word_with_gpt(text):
+# --- 設定: OpenAI (チャンク＆発音抽出) ---
+def analyze_chunk_with_gpt(target_word, context_sentence):
     client = OpenAI(api_key=st.secrets["openai"]["api_key"])
+    
+    # AIへの指示：発音記号(pronunciation)を追加
     prompt = f"""
-    You are an English-Japanese dictionary.
-    Explain the word: "{text}".
+    You are an expert English teacher.
+    The user is reading this text: "{context_sentence}"
+    The user clicked the word: "{target_word}"
+
+    Your task:
+    1. Identify the meaningful "chunk" or collocation in this context.
+    2. Provide the IPA pronunciation for that chunk.
+    3. Provide the Japanese meaning.
+
     Output MUST be a JSON object with these keys:
-    1. "meaning": Japanese meaning (short & clear).
-    2. "pos": Part of Speech (e.g., Verb, Noun).
-    3. "details": Synonyms or nuance explanation (keep it short).
+    1. "chunk": The identified phrase (English).
+    2. "pronunciation": IPA symbols (e.g. /həˈləʊ/).
+    3. "meaning": Japanese meaning.
+    4. "pos": Part of Speech.
+    5. "details": Brief nuance.
     """
+    
     try:
         response = client.chat.completions.create(
             model="gpt-4o-mini",
@@ -47,7 +59,7 @@ def translate_word_with_gpt(text):
         )
         return json.loads(response.choices[0].message.content)
     except Exception:
-        return {"meaning": "Error", "pos": "-", "details": "Try again."}
+        return {"chunk": target_word, "pronunciation": "", "meaning": "Error", "pos": "-", "details": "Try again."}
 
 # --- テキスト整形 ---
 def format_text_advanced(text):
@@ -92,14 +104,16 @@ if "last_clicked" not in st.session_state:
 if "slots" not in st.session_state:
     st.session_state.slots = [None] * 10
 else:
-    # スロット数が合わない場合の補正
     if len(st.session_state.slots) < 10:
         st.session_state.slots += [None] * (10 - len(st.session_state.slots))
+
+if "page_blocks" not in st.session_state:
+    st.session_state.page_blocks = []
 
 # ==========================================
 # アプリ画面
 # ==========================================
-st.title("📚 AI Book Reader")
+st.title("📚 AI Book Reader (IPA Edition)")
 
 # 1. ファイルアップロード
 with st.expander("📂 Upload PDF Settings", expanded=True):
@@ -111,21 +125,20 @@ with st.expander("📂 Upload PDF Settings", expanded=True):
     else:
         page_num = 1
 
-# ファイルがある場合のみ表示
 if uploaded_file is not None:
-    # 2. 画面分割
     col_main, col_side = st.columns([4, 1])
 
     # --- 左側：読書エリア ---
     with col_main:
         page = reader.pages[page_num - 1]
         blocks = format_text_advanced(page.extract_text())
+        st.session_state.page_blocks = blocks
 
         html_content = """
         <style>
-            /* PC・iPad用（基本設定） */
+            /* PC・iPad用 */
             #scrollable-container {
-                height: 1000px; /* ここがベースの高さ */
+                height: 1000px;
                 overflow-y: auto;
                 border: 1px solid #e0e0e0;
                 border-radius: 8px;
@@ -141,26 +154,17 @@ if uploaded_file is not None:
             .list-item { margin-left: 20px; margin-bottom: 10px; border-left: 4px solid #eee; padding-left: 15px; }
             .p-text { margin-bottom: 30px; text-align: justify; }
             
-            /* ▼▼▼ スマホ専用設定 (iPhone対応) ▼▼▼ */
+            /* スマホ用 */
             @media only screen and (max-width: 768px) {
                 #scrollable-container {
-                    /* ★修正点：スマホでも強制的に1000pxにする★ */
                     height: 1000px !important;
-                    
                     padding: 20px !important;
                     font-size: 18px !important;
                     line-height: 1.8 !important;
                 }
-                .header-text {
-                    font-size: 1.3em !important;
-                    margin: 25px 0 15px 0 !important;
-                }
-                .p-text {
-                    text-align: left !important;
-                    margin-bottom: 20px !important;
-                }
+                .header-text { font-size: 1.3em !important; margin: 25px 0 15px 0 !important; }
+                .p-text { text-align: left !important; margin-bottom: 20px !important; }
             }
-            /* ▲▲▲ ここまで ▲▲▲ */
 
             .w { 
                 text-decoration: none; color: #2c3e50; cursor: pointer; 
@@ -174,8 +178,7 @@ if uploaded_file is not None:
         <div id='scrollable-container'>
         """
         
-        word_counter = 0
-        for block in blocks:
+        for b_idx, block in enumerate(blocks):
             b_type = block["type"]
             text = block["text"]
             
@@ -188,15 +191,14 @@ if uploaded_file is not None:
                 html_content += "<div class='p-text'>"
 
             words = text.split()
-            for w in words:
+            for w_idx, w in enumerate(words):
                 clean_w = w.strip(".,!?\"'()[]{}:;")
                 if not clean_w:
                     html_content += w + " "
                     continue
-                unique_id = f"{word_counter}_{clean_w}"
+                unique_id = f"blk{b_idx}_wd{w_idx}_{clean_w}"
                 safe_w = html.escape(w)
                 html_content += f"<a href='#' id='{unique_id}' class='w'>{safe_w}</a> "
-                word_counter += 1
             html_content += "</div>"
         
         html_content += "</div>"
@@ -205,7 +207,7 @@ if uploaded_file is not None:
 
     # --- 右側：辞書スロット ---
     with col_side:
-        st.markdown("### 🗃️ Dictionary")
+        st.markdown("### 🗃️ Chunk Dict")
         
         if st.button("Reset", use_container_width=True):
             st.session_state.slots = [None] * 10
@@ -220,7 +222,7 @@ if uploaded_file is not None:
             if slot_data is None:
                 st.markdown(f"""
                 <div style="
-                    height: 100px;
+                    height: 110px;
                     border: 2px dashed #e0e0e0;
                     border-radius: 6px;
                     margin-bottom: 10px;
@@ -232,13 +234,16 @@ if uploaded_file is not None:
                 ">Slot {i+1}</div>
                 """, unsafe_allow_html=True)
             else:
-                word = slot_data['word']
+                chunk = slot_data['chunk']
                 info = slot_data['info']
+                # 発音記号があれば表示
+                pron = info.get('pronunciation', '')
+                
                 st.markdown(f"""
                 <div style="
-                    height: 100px; 
-                    border-left: 5px solid #66bb6a;
-                    background-color: #f9fff9;
+                    height: 110px; 
+                    border-left: 5px solid #2980b9;
+                    background-color: #f0f8ff;
                     padding: 8px;
                     margin-bottom: 10px;
                     border-radius: 6px;
@@ -246,15 +251,17 @@ if uploaded_file is not None:
                     overflow-y: auto;
                 ">
                     <div style="display:flex; justify-content:space-between; align-items:baseline;">
-                        <span style="font-weight:bold; color:#2e7d32; font-size:1.0em;">{word}</span>
-                        <span style="background:#e8f5e9; color:#2e7d32; padding:1px 4px; border-radius:3px; font-size:0.7em;">{info.get('pos')}</span>
+                        <span style="font-weight:bold; color:#1a5276; font-size:1.1em;">{chunk}</span>
+                        <span style="background:#d4e6f1; color:#1a5276; padding:1px 4px; border-radius:3px; font-size:0.7em;">{info.get('pos')}</span>
                     </div>
-                    <div style="font-weight:bold; font-size:0.85em; margin-top:4px; color:#333; line-height:1.2;">{info.get('meaning')}</div>
+                    <div style="font-family:'Lucida Sans Unicode', sans-serif; color:#555; font-size:0.85em; margin-top:2px;">{pron}</div>
+                    
+                    <div style="font-weight:bold; font-size:0.9em; margin-top:3px; color:#333; line-height:1.2;">{info.get('meaning')}</div>
                     <div style="font-size:0.75em; color:#666; margin-top:2px;">{info.get('details')}</div>
                 </div>
                 """, unsafe_allow_html=True)
 
-    # --- JSでスクロール制御 ---
+    # --- JSスクロール制御 ---
     components.html("""
     <script>
         setTimeout(function() {
@@ -275,24 +282,42 @@ if uploaded_file is not None:
     # --- クリック処理 ---
     if clicked and clicked != st.session_state.last_clicked:
         st.session_state.last_clicked = clicked
-        target_word = clicked.split("_", 1)[1]
         
-        result = translate_word_with_gpt(target_word)
-        
-        current_slots = st.session_state.slots
-        current_slots.pop()
-        current_slots.insert(0, {"word": target_word, "info": result})
-        st.session_state.slots = current_slots[:10] + [None] * (10 - len(current_slots))
-        
-        client = get_gspread_client()
-        if client:
-            try:
-                sheet = client.open(st.secrets["sheet_config"]["sheet_name"]).sheet1
-                today = datetime.now().strftime("%Y-%m-%d")
-                sheet.append_row([target_word, result["meaning"], today])
-            except: pass
-        
-        st.rerun()
+        parts = clicked.split("_", 2)
+        if len(parts) == 3:
+            block_idx = int(parts[0].replace("blk", ""))
+            target_word = parts[2]
+            
+            if 0 <= block_idx < len(st.session_state.page_blocks):
+                context_sentence = st.session_state.page_blocks[block_idx]["text"]
+            else:
+                context_sentence = ""
+
+            # AI分析 (発音記号含む)
+            result = analyze_chunk_with_gpt(target_word, context_sentence)
+            
+            current_slots = st.session_state.slots
+            current_slots.pop()
+            current_slots.insert(0, {"chunk": result["chunk"], "info": result})
+            st.session_state.slots = current_slots[:10] + [None] * (10 - len(current_slots))
+            
+            # シート保存 (4列: Chunk, Pronunciation, Meaning, Context)
+            client = get_gspread_client()
+            if client:
+                try:
+                    sheet = client.open(st.secrets["sheet_config"]["sheet_name"]).sheet1
+                    meaning_full = f"{result['meaning']} ({result['pos']}) - {result['details']}"
+                    
+                    # ★ここで4列保存★
+                    sheet.append_row([
+                        result['chunk'], 
+                        result.get('pronunciation', ''), 
+                        meaning_full, 
+                        context_sentence
+                    ])
+                except: pass
+            
+            st.rerun()
 
 else:
     st.info("👆 Please upload a PDF file above.")
