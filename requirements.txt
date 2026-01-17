@@ -1,7 +1,7 @@
 streamlit
 pandas
 pypdf
-deep-translator
+openai
 gspread
 oauth2client
 st-click-detector
