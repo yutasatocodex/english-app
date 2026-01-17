@@ -29,7 +29,6 @@ def get_gspread_client():
 def analyze_chunk_with_gpt(target_word, context_sentence):
     client = OpenAI(api_key=st.secrets["openai"]["api_key"])
     
-    # AIへの指示：発音記号(pronunciation)を追加
     prompt = f"""
     You are an expert English teacher.
     The user is reading this text: "{context_sentence}"
@@ -113,7 +112,7 @@ if "page_blocks" not in st.session_state:
 # ==========================================
 # アプリ画面
 # ==========================================
-st.title("📚 AI Book Reader (IPA Edition)")
+st.title("📚 AI Book Reader")
 
 # 1. ファイルアップロード
 with st.expander("📂 Upload PDF Settings", expanded=True):
@@ -222,7 +221,7 @@ if uploaded_file is not None:
             if slot_data is None:
                 st.markdown(f"""
                 <div style="
-                    height: 110px;
+                    height: 150px;
                     border: 2px dashed #e0e0e0;
                     border-radius: 6px;
                     margin-bottom: 10px;
@@ -236,28 +235,18 @@ if uploaded_file is not None:
             else:
                 chunk = slot_data['chunk']
                 info = slot_data['info']
-                # 発音記号があれば表示
                 pron = info.get('pronunciation', '')
                 
+                # HTMLを整理してバグを防ぎつつ、箱を大きく・文字を小さく調整
                 st.markdown(f"""
-                <div style="
-                    height: 110px; 
-                    border-left: 5px solid #2980b9;
-                    background-color: #f0f8ff;
-                    padding: 8px;
-                    margin-bottom: 10px;
-                    border-radius: 6px;
-                    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-                    overflow-y: auto;
-                ">
-                    <div style="display:flex; justify-content:space-between; align-items:baseline;">
-                        <span style="font-weight:bold; color:#1a5276; font-size:1.1em;">{chunk}</span>
+                <div style="height: 150px; border-left: 5px solid #2980b9; background-color: #f0f8ff; padding: 10px; margin-bottom: 10px; border-radius: 6px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); overflow-y: auto;">
+                    <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:4px;">
+                        <span style="font-weight:bold; color:#1a5276; font-size:1.0em;">{chunk}</span>
                         <span style="background:#d4e6f1; color:#1a5276; padding:1px 4px; border-radius:3px; font-size:0.7em;">{info.get('pos')}</span>
                     </div>
-                    <div style="font-family:'Lucida Sans Unicode', sans-serif; color:#555; font-size:0.85em; margin-top:2px;">{pron}</div>
-                    
-                    <div style="font-weight:bold; font-size:0.9em; margin-top:3px; color:#333; line-height:1.2;">{info.get('meaning')}</div>
-                    <div style="font-size:0.75em; color:#666; margin-top:2px;">{info.get('details')}</div>
+                    <div style="font-family:'Lucida Sans Unicode', sans-serif; color:#555; font-size:0.8em; margin-bottom:4px;">{pron}</div>
+                    <div style="font-weight:bold; font-size:0.85em; color:#333; line-height:1.4; margin-bottom:4px;">{info.get('meaning')}</div>
+                    <div style="font-size:0.75em; color:#666; line-height:1.3;">{info.get('details')}</div>
                 </div>
                 """, unsafe_allow_html=True)
 
@@ -293,7 +282,6 @@ if uploaded_file is not None:
             else:
                 context_sentence = ""
 
-            # AI分析 (発音記号含む)
             result = analyze_chunk_with_gpt(target_word, context_sentence)
             
             current_slots = st.session_state.slots
@@ -301,14 +289,11 @@ if uploaded_file is not None:
             current_slots.insert(0, {"chunk": result["chunk"], "info": result})
             st.session_state.slots = current_slots[:10] + [None] * (10 - len(current_slots))
             
-            # シート保存 (4列: Chunk, Pronunciation, Meaning, Context)
             client = get_gspread_client()
             if client:
                 try:
                     sheet = client.open(st.secrets["sheet_config"]["sheet_name"]).sheet1
                     meaning_full = f"{result['meaning']} ({result['pos']}) - {result['details']}"
-                    
-                    # ★ここで4列保存★
                     sheet.append_row([
                         result['chunk'], 
                         result.get('pronunciation', ''), 
