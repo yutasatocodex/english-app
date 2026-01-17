@@ -23,7 +23,7 @@ def translate_with_gpt(text):
     client = OpenAI(api_key=st.secrets["openai"]["api_key"])
     
     response = client.chat.completions.create(
-        model="gpt-4o-mini",  # コスパ最強の最新モデル
+        model="gpt-4o-mini",
         messages=[
             {"role": "system", "content": "You are a professional translator. Translate the following English word or phrase into Japanese directly. Output ONLY the Japanese meaning. No explanations."},
             {"role": "user", "content": text}
