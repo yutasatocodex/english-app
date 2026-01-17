@@ -43,9 +43,9 @@ def translate_word_with_gpt(text):
         )
         return json.loads(response.choices[0].message.content)
     except Exception:
-        return {"meaning": "Error", "pos": "-", "details": "Could not translate."}
+        return {"meaning": "Translation Error", "pos": "-", "details": "Please try again."}
 
-# --- 📖 高度なテキスト整形ロジック ---
+# --- 📖 高度なテキスト整形ロジック (改良版) ---
 def format_text_advanced(text):
     if not text: return []
     
@@ -53,7 +53,7 @@ def format_text_advanced(text):
     formatted_blocks = []
     current_paragraph = ""
     
-    # 見出しとみなさない末尾の文字（これらで終わる行は文章の一部とみなす）
+    # 文末記号（これらで終わる行は見出しではない確率が高い）
     sentence_endings = ('.', ',', '!', '?', ':', ';', '"', "'", '”', '’', ')', ']')
 
     for line in lines:
@@ -64,15 +64,22 @@ def format_text_advanced(text):
         # 1. 箇条書き判定 (•, -, *, 数字.)
         is_bullet = re.match(r'^([•·\-\*]|\d+\.)', line)
         
-        # 2. 見出し判定 (厳しめに設定)
-        # - 60文字以下
-        # - 文末記号で終わっていない
-        # - 箇条書きではない
-        # - (追加) 大文字で始まっている、または数字で始まっている
-        is_header = (len(line) < 60) and \
-                    (not line.endswith(sentence_endings)) and \
-                    (not is_bullet) and \
-                    (line[0].isupper() or line[0].isdigit() or line.startswith("Chapter"))
+        # 2. 見出し判定 (誤爆を防ぐため厳格化)
+        # 条件:
+        # A. 80文字未満
+        # B. 文末記号で終わっていない
+        # C. 箇条書きではない
+        # D. 「すべて大文字」 または 「Chapter/数字で始まる」 または 「タイトルっぽい単語(Introductionなど)」
+        
+        is_short_and_no_punct = (len(line) < 80) and (not line.endswith(sentence_endings))
+        
+        is_header_pattern = (
+            line.isupper() or  # 全部大文字 (INTRODUCTION など)
+            re.match(r'^(Chapter|Section|Part|\d+\s+[A-Z])', line, re.IGNORECASE) or # Chapter 1 など
+            re.match(r'^\d+$', line) # ページ番号など単独の数字
+        )
+
+        is_header = is_short_and_no_punct and (not is_bullet) and is_header_pattern
 
         if is_header or is_bullet:
             # 今までの段落を吐き出す
@@ -88,7 +95,7 @@ def format_text_advanced(text):
         else:
             # 文章をつなげる処理
             if current_paragraph:
-                # ハイフンで終わる場合はつなげる (ex- \n ample -> example)
+                # ハイフン行末の処理 (ex- \n ample -> example)
                 if current_paragraph.endswith("-"):
                     current_paragraph = current_paragraph[:-1] + line
                 else:
@@ -105,7 +112,7 @@ def format_text_advanced(text):
 # --- セッション初期化 ---
 if "last_clicked" not in st.session_state:
     st.session_state.last_clicked = ""
-# 履歴リストを作成（新しい順に保存）
+# 履歴リスト（{word, info, time} の辞書を格納）
 if "history" not in st.session_state:
     st.session_state.history = [] 
 
@@ -122,8 +129,8 @@ if uploaded_file is not None:
     
     page_num = st.number_input("Page", 1, total_pages, 1)
 
-    # 左右カラム作成 (左: 2.5, 右: 1 の比率)
-    col_main, col_side = st.columns([2.5, 1])
+    # 左右カラム作成 (左:本文 70%, 右:履歴 30%)
+    col_main, col_side = st.columns([7, 3])
 
     # --- 左側: 本文エリア ---
     with col_main:
@@ -133,7 +140,7 @@ if uploaded_file is not None:
         raw_text = page.extract_text()
         blocks = format_text_advanced(raw_text)
 
-        # CSS定義（本のような見た目 + 箇条書き対応）
+        # CSS定義（スクロール戻りを防ぐため、クリックしてもスタイルを変えない）
         html_content = """
         <style>
             .book-container {
@@ -145,12 +152,12 @@ if uploaded_file is not None:
                 padding: 40px;
                 border: 1px solid #ddd;
                 border-radius: 8px;
-                box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+                box-shadow: 0 2px 5px rgba(0,0,0,0.05);
             }
             .header-text {
                 font-family: 'Helvetica Neue', Arial, sans-serif;
                 font-weight: bold;
-                font-size: 1.4em;
+                font-size: 1.3em;
                 margin-top: 30px;
                 margin-bottom: 15px;
                 color: #000;
@@ -159,7 +166,9 @@ if uploaded_file is not None:
             }
             .list-item {
                 margin-left: 20px;
-                margin-bottom: 10px;
+                margin-bottom: 8px;
+                padding-left: 10px;
+                border-left: 3px solid #eee;
                 display: block;
             }
             .p-text {
@@ -170,12 +179,13 @@ if uploaded_file is not None:
                 text-decoration: none; 
                 color: #2c3e50; 
                 cursor: pointer; 
-                transition: background 0.1s;
+                border-bottom: 1px dotted transparent;
+                transition: all 0.2s;
             }
             .w:hover { 
-                background-color: #fff59d; 
-                border-radius: 2px;
-                color: #000;
+                color: #e67e22;
+                border-bottom: 1px solid #e67e22;
+                background-color: rgba(255, 236, 179, 0.3);
             }
         </style>
         <div class='book-container'>
@@ -187,12 +197,12 @@ if uploaded_file is not None:
             text = block["text"]
             b_type = block["type"]
             
-            # HTMLタグの開始
+            # HTML構造の組み立て
             if b_type == "h":
                 html_content += f"<div class='header-text'>{html.escape(text)}</div>"
-                continue # 見出し内の単語はクリック不可にする（誤タップ防止）
+                continue # 見出しはクリック対象外
             elif b_type == "li":
-                html_content += "<div class='list-item'>• "
+                html_content += "<div class='list-item'>"
             else:
                 html_content += "<div class='p-text'>"
 
@@ -204,37 +214,38 @@ if uploaded_file is not None:
                     html_content += w + " "
                     continue
                 
+                # ID生成 (連番_単語)
                 unique_id = f"{word_counter}_{clean_w}"
                 safe_w = html.escape(w)
                 html_content += f"<a href='#' id='{unique_id}' class='w'>{safe_w}</a> "
                 word_counter += 1
             
-            # HTMLタグの終了
             html_content += "</div>"
         
         html_content += "</div>"
         
-        # クリック検知
-        clicked = click_detector(html_content)
+        # クリック検知 (keyを固定することで再描画時の安定性を高める)
+        clicked = click_detector(html_content, key="pdf_text_detector")
         
+        # --- クリック時の処理 ---
         if clicked and clicked != st.session_state.last_clicked:
             st.session_state.last_clicked = clicked
             
             target_word = clicked.split("_", 1)[1]
-            st.toast(f"Searching: {target_word}", icon="🔍")
             
-            # 翻訳して履歴の先頭に追加
+            # 翻訳実行
             result = translate_word_with_gpt(target_word)
             timestamp = datetime.now().strftime("%H:%M")
             
+            # 履歴の先頭に追加 (スタック形式)
             new_entry = {
                 "word": target_word,
                 "info": result,
                 "time": timestamp
             }
-            st.session_state.history.insert(0, new_entry) # リストの先頭に追加
+            st.session_state.history.insert(0, new_entry) 
             
-            # シート保存
+            # シート保存 (エラーが出ても止まらないようにする)
             try:
                 client = get_gspread_client()
                 sheet = client.open(st.secrets["sheet_config"]["sheet_name"]).sheet1
@@ -245,11 +256,10 @@ if uploaded_file is not None:
             
             st.rerun()
 
-    # --- 右側: 履歴表示エリア（コンパクト化） ---
+    # --- 右側: 履歴表示エリア (タイムライン) ---
     with col_side:
         st.subheader("History ⏳")
         
-        # 履歴削除ボタン
         if st.button("Clear History", use_container_width=True):
             st.session_state.history = []
             st.rerun()
@@ -258,29 +268,32 @@ if uploaded_file is not None:
         if history:
             for item in history:
                 info = item["info"]
-                # コンパクトなカードデザイン
+                word = item['word']
+                
+                # カードデザイン (コンパクトで見やすく)
                 st.markdown(f"""
                 <div style="
-                    border-left: 4px solid #4CAF50;
-                    background-color: #f9f9f9;
-                    padding: 10px 12px;
-                    margin-bottom: 10px;
-                    border-radius: 4px;
-                    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+                    border-left: 5px solid #66bb6a;
+                    background-color: #fff;
+                    padding: 12px;
+                    margin-bottom: 12px;
+                    border-radius: 6px;
+                    box-shadow: 0 2px 4px rgba(0,0,0,0.08);
+                    animation: fadeIn 0.5s;
                 ">
-                    <div style="display:flex; justify-content:space-between; align-items:center;">
-                        <span style="font-weight:bold; color:#2e7d32; font-size:1.1em;">{item['word']}</span>
-                        <span style="font-size:0.7em; color:#999;">{item['time']}</span>
+                    <div style="display:flex; justify-content:space-between; align-items:baseline;">
+                        <span style="font-weight:bold; color:#2e7d32; font-size:1.1em;">{word}</span>
+                        <span style="font-size:0.7em; color:#aaa;">{item['time']}</span>
                     </div>
-                    <div style="font-size:0.85em; color:#555; margin-top:2px;">
-                        <span style="background:#e8f5e9; padding:1px 4px; border-radius:3px;">{info.get('pos')}</span>
+                    <div style="font-size:0.8em; margin-top:4px; margin-bottom:4px;">
+                        <span style="background:#e8f5e9; color:#2e7d32; padding:2px 6px; border-radius:4px;">{info.get('pos')}</span>
                     </div>
-                    <div style="font-weight:bold; margin-top:5px; font-size:0.95em;">{info.get('meaning')}</div>
-                    <div style="font-size:0.8em; color:#666; margin-top:2px; line-height:1.2;">{info.get('details')}</div>
+                    <div style="font-weight:bold; font-size:0.95em; color:#333;">{info.get('meaning')}</div>
+                    <div style="font-size:0.8em; color:#666; margin-top:4px; line-height:1.3;">{info.get('details')}</div>
                 </div>
                 """, unsafe_allow_html=True)
         else:
-            st.info("Tap words to translate.")
+            st.info("Tap a word to translate.")
 
 else:
     st.info("👈 Please upload a PDF file.")
