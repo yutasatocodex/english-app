@@ -103,12 +103,4 @@ st.title("📚 AI Book Reader")
 # 1. ファイルアップロード
 with st.expander("📂 Upload PDF Settings", expanded=True):
     uploaded_file = st.file_uploader("Choose a PDF file", type="pdf")
-    if uploaded_file is not None:
-        reader = PdfReader(uploaded_file)
-        total_pages = len(reader.pages)
-        page_num = st.number_input(f"Page (Total {total_pages})", 1, total_pages, 1)
-    else:
-        page_num = 1
-
-if uploaded_file is not None:
-    # 2. 画面
+    if uploaded_file is
