@@ -88,9 +88,14 @@ def format_text_advanced(text):
 # --- セッション初期化 ---
 if "last_clicked" not in st.session_state:
     st.session_state.last_clicked = ""
-# スロットを10個に増設
+
+# スロット初期化（安全策：必ず10個にする）
 if "slots" not in st.session_state:
     st.session_state.slots = [None] * 10
+else:
+    # 以前のデータが残っていて数が合わない場合の補正
+    if len(st.session_state.slots) < 10:
+        st.session_state.slots += [None] * (10 - len(st.session_state.slots))
 
 # ==========================================
 # アプリ画面
@@ -100,7 +105,6 @@ st.title("📚 AI Book Reader")
 # 1. ファイルアップロード（画面上部）
 with st.expander("📂 Upload PDF Settings", expanded=True):
     uploaded_file = st.file_uploader("Choose a PDF file", type="pdf")
-    # ページ指定もここに配置
     if uploaded_file is not None:
         reader = PdfReader(uploaded_file)
         total_pages = len(reader.pages)
@@ -108,23 +112,8 @@ with st.expander("📂 Upload PDF Settings", expanded=True):
     else:
         page_num = 1
 
-# スクロール位置復元用JS
-components.html("""
-<script>
-    const scrollBox = window.parent.document.getElementById('scrollable-container');
-    if (scrollBox) {
-        const savedPos = sessionStorage.getItem('scrollPos');
-        if (savedPos) scrollBox.scrollTop = savedPos;
-        scrollBox.onscroll = function() {
-            sessionStorage.setItem('scrollPos', scrollBox.scrollTop);
-        };
-    }
-</script>
-""", height=0)
-
 if uploaded_file is not None:
     # 2. 画面分割（左：読書[広め]、右：辞書[狭め]）
-    # 比率を [4, 1] にして本文を最大限広げる
     col_main, col_side = st.columns([4, 1])
 
     # --- 左側：読書エリア ---
@@ -132,19 +121,18 @@ if uploaded_file is not None:
         page = reader.pages[page_num - 1]
         blocks = format_text_advanced(page.extract_text())
 
-        # HTML生成
         html_content = """
         <style>
             #scrollable-container {
-                height: 85vh; /* 画面の高さいっぱい */
+                height: 85vh; /* 画面の高さ85% */
                 overflow-y: auto;
                 border: 1px solid #e0e0e0;
                 border-radius: 8px;
-                padding: 50px; /* 余白を広めに */
+                padding: 50px;
                 background-color: #ffffff;
                 font-family: 'Georgia', serif;
-                font-size: 21px; /* 文字サイズ大きめ */
-                line-height: 2.0; /* 行間ゆったり */
+                font-size: 21px; 
+                line-height: 2.0;
                 color: #2c3e50;
                 box-shadow: 0 4px 6px rgba(0,0,0,0.05);
             }
@@ -200,12 +188,14 @@ if uploaded_file is not None:
             st.session_state.slots = [None] * 10
             st.rerun()
 
-        # スロット表示ループ（10回）
+        # 安全に10個ループ
         for i in range(10):
-            slot_data = st.session_state.slots[i]
+            if i < len(st.session_state.slots):
+                slot_data = st.session_state.slots[i]
+            else:
+                slot_data = None
             
             if slot_data is None:
-                # 空きスロット（場所確保）
                 st.markdown(f"""
                 <div style="
                     height: 100px;
@@ -224,7 +214,7 @@ if uploaded_file is not None:
                 info = slot_data['info']
                 st.markdown(f"""
                 <div style="
-                    height: 100px; /* 高さ固定 */
+                    height: 100px; 
                     border-left: 5px solid #66bb6a;
                     background-color: #f9fff9;
                     padding: 8px;
@@ -242,6 +232,28 @@ if uploaded_file is not None:
                 </div>
                 """, unsafe_allow_html=True)
 
+    # --- ★重要: スクロール制御JSを最後に配置 ---
+    # 画面要素が出揃った後に実行することで、確実にIDを見つけさせる
+    components.html("""
+    <script>
+        // 0.1秒待ってからスクロール位置を復元（描画待ち）
+        setTimeout(function() {
+            const scrollBox = window.parent.document.getElementById('scrollable-container');
+            if (scrollBox) {
+                const savedPos = sessionStorage.getItem('scrollPos');
+                if (savedPos) {
+                    scrollBox.scrollTop = savedPos;
+                    console.log("Restored scroll to:", savedPos);
+                }
+                
+                scrollBox.onscroll = function() {
+                    sessionStorage.setItem('scrollPos', scrollBox.scrollTop);
+                };
+            }
+        }, 100);
+    </script>
+    """, height=0)
+
     # --- クリック処理 ---
     if clicked and clicked != st.session_state.last_clicked:
         st.session_state.last_clicked = clicked
@@ -249,10 +261,13 @@ if uploaded_file is not None:
         
         result = translate_word_with_gpt(target_word)
         
+        # リストを回転させる（10個以上は押し出し）
         current_slots = st.session_state.slots
         current_slots.pop() # 末尾を削除
         current_slots.insert(0, {"word": target_word, "info": result}) # 先頭に追加
-        st.session_state.slots = current_slots
+        
+        # 安全策：長さを10に保つ
+        st.session_state.slots = current_slots[:10] + [None] * (10 - len(current_slots))
         
         client = get_gspread_client()
         if client:
