@@ -93,7 +93,6 @@ if "last_clicked" not in st.session_state:
 if "slots" not in st.session_state:
     st.session_state.slots = [None] * 10
 else:
-    # 以前のデータが残っていて数が合わない場合の補正
     if len(st.session_state.slots) < 10:
         st.session_state.slots += [None] * (10 - len(st.session_state.slots))
 
@@ -124,7 +123,7 @@ if uploaded_file is not None:
         html_content = """
         <style>
             #scrollable-container {
-                height: 85vh; /* 画面の高さ85% */
+                height: 1000px; /* ★ここを1000pxに固定！これで縮まない★ */
                 overflow-y: auto;
                 border: 1px solid #e0e0e0;
                 border-radius: 8px;
@@ -233,24 +232,22 @@ if uploaded_file is not None:
                 """, unsafe_allow_html=True)
 
     # --- ★重要: スクロール制御JSを最後に配置 ---
-    # 画面要素が出揃った後に実行することで、確実にIDを見つけさせる
+    # 0.5秒待ってからスクロール位置を復元（描画待ち時間を少し延長）
     components.html("""
     <script>
-        // 0.1秒待ってからスクロール位置を復元（描画待ち）
         setTimeout(function() {
             const scrollBox = window.parent.document.getElementById('scrollable-container');
             if (scrollBox) {
                 const savedPos = sessionStorage.getItem('scrollPos');
                 if (savedPos) {
                     scrollBox.scrollTop = savedPos;
-                    console.log("Restored scroll to:", savedPos);
                 }
                 
                 scrollBox.onscroll = function() {
                     sessionStorage.setItem('scrollPos', scrollBox.scrollTop);
                 };
             }
-        }, 100);
+        }, 300);
     </script>
     """, height=0)
 
@@ -261,12 +258,12 @@ if uploaded_file is not None:
         
         result = translate_word_with_gpt(target_word)
         
-        # リストを回転させる（10個以上は押し出し）
+        # リストを回転させる
         current_slots = st.session_state.slots
         current_slots.pop() # 末尾を削除
         current_slots.insert(0, {"word": target_word, "info": result}) # 先頭に追加
         
-        # 安全策：長さを10に保つ
+        # 安全策
         st.session_state.slots = current_slots[:10] + [None] * (10 - len(current_slots))
         
         client = get_gspread_client()
