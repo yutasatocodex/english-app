@@ -1,17 +1,16 @@
 import streamlit as st
-import pandas as pd
 from pypdf import PdfReader
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 from st_click_detector import click_detector
 import html
-import traceback
 import re
+import json
 from openai import OpenAI
 
-# --- 設定: ページ設定（ワイド表示） ---
-st.set_page_config(layout="wide")
+# --- ページ設定（ワイド表示） ---
+st.set_page_config(layout="wide", page_title="AI PDF Note")
 
 # --- 設定1: Googleスプレッドシート連携 ---
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -22,213 +21,260 @@ def get_gspread_client():
     client = gspread.authorize(creds)
     return client
 
-# --- 設定2: OpenAI (ChatGPT) 辞書機能 ---
-def translate_with_gpt(text: str) -> dict:
+# --- 設定2: OpenAI (ChatGPT) 辞書機能 (JSONモード) ---
+def translate_list_with_gpt(word_list):
     client = OpenAI(api_key=st.secrets["openai"]["api_key"])
-    # プロンプトを強化：品詞や他の意味も取得する
-    prompt = (
-        f"Explain the English word '{text}' for a Japanese learner.\n"
-        "Output format must be exactly like this (3 lines):\n"
-        "JAPANESE_MEANING: (The most common Japanese meaning)\n"
-        "POS: (Part of Speech, e.g., Verb, Noun)\n"
-        "DETAILS: (Other meanings, synonyms, or a brief nuance explanation in Japanese)"
-    )
     
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": "You are a helpful English-Japanese dictionary AI."},
-            {"role": "user", "content": prompt},
-        ],
-    )
-    raw_content = response.choices[0].message.content.strip()
+    # 複数の単語をまとめてJSONで返させるプロンプト
+    words_str = ", ".join(word_list)
+    prompt = f"""
+    You are an English-Japanese dictionary.
+    Identify the following words: {words_str}.
+    For each word, provide:
+    1. "meaning": Japanese meaning (short).
+    2. "pos": Part of Speech (e.g., Verb, Noun) in Japanese or English.
+    3. "details": Brief nuance or synonyms.
     
-    # 結果を解析して辞書にする
-    result = {"meaning": "???", "pos": "", "details": ""}
-    for line in raw_content.split('\n'):
-        if line.startswith("JAPANESE_MEANING:"):
-            result["meaning"] = line.replace("JAPANESE_MEANING:", "").strip()
-        elif line.startswith("POS:"):
-            result["pos"] = line.replace("POS:", "").strip()
-        elif line.startswith("DETAILS:"):
-            result["details"] = line.replace("DETAILS:", "").strip()
-            
-    # 解析失敗時のフォールバック
-    if result["meaning"] == "???":
-        result["meaning"] = raw_content
-        
-    return result
+    Output MUST be a JSON object like:
+    {{
+        "word1": {{"meaning": "...", "pos": "...", "details": "..."}},
+        "word2": {{"meaning": "...", "pos": "...", "details": "..."}}
+    }}
+    """
+    
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant that outputs JSON."},
+                {"role": "user", "content": prompt},
+            ],
+            response_format={"type": "json_object"} # JSONを強制
+        )
+        return json.loads(response.choices[0].message.content)
+    except Exception as e:
+        return {}
 
-# --- PDFテキスト整形関数（ここが重要！） ---
-def clean_pdf_text(text):
+# --- PDFテキスト整形関数（改良版） ---
+def clean_pdf_text_smart(text):
     if not text:
         return ""
-    # 1. ハイフネーション（行末の - ）をつなげる
-    text = re.sub(r'-\n', '', text)
-    # 2. 基本的な改行をスペースに置換（文章をつなげる）
-    text = re.sub(r'(?<!\n)\n(?!\n)', ' ', text)
-    # 3. 連続する空白を1つにまとめる
-    text = re.sub(r'\s+', ' ', text)
-    return text.strip()
+    
+    lines = text.splitlines()
+    new_lines = []
+    
+    for i, line in enumerate(lines):
+        line = line.strip()
+        if not line:
+            continue
+            
+        # 1. ハイフネーション行末処理 (例: com- \n puter -> computer)
+        if line.endswith("-"):
+            line = line[:-1] # ハイフンを取って次の行と繋げる準備
+            # この場合は改行コードを入れずにリストに追加（後でjoinするときに工夫が必要だが簡易的に）
+        
+        new_lines.append(line)
+
+    # 結合ロジック
+    # 基本はスペースで繋ぐが、以下の場合は「改行」を入れる
+    # A. 文末記号 (., !, ?) で終わっている
+    # B. 行が極端に短い（見出しの可能性）
+    # C. 箇条書き記号で始まっている
+    
+    final_text = ""
+    for line in new_lines:
+        is_end_of_sentence = line.endswith(('.', '!', '?', ':', ';'))
+        is_short_title = len(line) < 50 and not line.endswith(',')
+        is_bullet = line.strip().startswith(('•', '-', '*', '1.', '2.', '3.', 'Chapter'))
+        
+        if final_text:
+            # 前の行が「文の終わり」か「見出し」なら改行を入れる
+            # そうでなければスペースで繋ぐ（文章をつなげる）
+            prev_char = final_text[-1]
+            if prev_char in ['.', '!', '?', '\n'] or is_bullet or is_short_title:
+                final_text += "\n" + line
+            else:
+                final_text += " " + line
+        else:
+            final_text = line
+            
+    return final_text
 
 # --- セッション状態の初期化 ---
-if "last_clicked_id" not in st.session_state:
-    st.session_state.last_clicked_id = ""
 if "clicked_ids" not in st.session_state:
-    st.session_state.clicked_ids = set()
-if "current_translation" not in st.session_state:
-    st.session_state.current_translation = None
+    st.session_state.clicked_ids = set() # 選択中の単語ID
+if "translated_results" not in st.session_state:
+    st.session_state.translated_results = {} # 翻訳結果
 
 # --- アプリ画面構成 ---
-st.title("🤖 AI English PDF Dictionary")
+st.title("🤖 AI PDF Reader & Marker")
 
-# 2カラムレイアウト（左：PDF操作、右：辞書結果）
-col1, col2 = st.columns([2, 1])
-
-with col1:
-    st.markdown("### 📄 PDF Viewer")
-    uploaded_file = st.file_uploader("Choose a PDF file", type="pdf")
+# レイアウト: サイドバーで操作、メインで閲覧
+st.sidebar.header("1. Upload & Controls")
+uploaded_file = st.sidebar.file_uploader("Upload PDF", type="pdf")
 
 if uploaded_file is not None:
     try:
         reader = PdfReader(uploaded_file)
         total_pages = len(reader.pages)
 
-        # ページネーション（メインエリアに配置）
-        with col1:
-            page_num = st.number_input(
-                f"Page (Total {total_pages})", min_value=1, max_value=total_pages, value=1, step=1
-            )
+        # ページ移動
+        page_num = st.sidebar.number_input(
+            "Page", min_value=1, max_value=total_pages, value=1, step=1
+        )
+        
+        # --- 翻訳実行ボタン（サイドバー） ---
+        st.sidebar.markdown("---")
+        st.sidebar.markdown("### 2. Actions")
+        
+        # 現在選択されている単語のリストを作成
+        selected_words_display = []
+        # IDから単語を復元するための辞書が必要だが、
+        # ここでは簡易的にセッションに保存されたIDを使う
+        
+        if st.sidebar.button("Translate Selected Words", type="primary"):
+            # 選択されたIDから単語リストを作る（後述のロジックでIDに単語を埋め込む）
+            targets = []
+            for cid in st.session_state.clicked_ids:
+                if "_" in cid: # ID形式: index_word
+                    word = cid.split("_", 1)[1]
+                    targets.append(word)
             
-            page = reader.pages[page_num - 1]
-            raw_text = page.extract_text()
+            if targets:
+                with st.spinner("Translating all words..."):
+                    results = translate_list_with_gpt(targets)
+                    st.session_state.translated_results = results
+                    
+                    # スプレッドシート保存
+                    try:
+                        client = get_gspread_client()
+                        sheet_name = st.secrets["sheet_config"]["sheet_name"]
+                        sheet = client.open(sheet_name).sheet1
+                        date_str = datetime.now().strftime("%Y-%m-%d")
+                        
+                        rows_to_add = []
+                        for word, info in results.items():
+                            rows_to_add.append([word, info.get("meaning", ""), date_str])
+                        
+                        if rows_to_add:
+                            sheet.append_rows(rows_to_add)
+                            st.toast(f"✅ Saved {len(rows_to_add)} words!", icon="📂")
+                    except Exception as e:
+                        st.error(f"Sheet Error: {e}")
 
-            if raw_text:
-                # PDFテキストをきれいに整形（改行削除）
-                clean_text = clean_pdf_text(raw_text)
+        # --- クリアボタン ---
+        if st.sidebar.button("Clear Markers"):
+            st.session_state.clicked_ids = set()
+            st.session_state.translated_results = {}
+            st.rerun()
+
+        # --- メインエリア表示 ---
+        page = reader.pages[page_num - 1]
+        raw_text = page.extract_text()
+
+        if raw_text:
+            # 改良版テキスト整形
+            clean_text = clean_pdf_text_smart(raw_text)
+            
+            # 2カラム: 左(本文), 右(翻訳結果)
+            col_text, col_res = st.columns([2, 1])
+            
+            with col_text:
+                st.markdown("### 📄 Reader View")
                 
-                # HTML生成（単語ごとにリンク化）
+                # HTML生成
                 html_content = """
                 <style>
-                    .pdf-container {
+                    .pdf-box {
                         font-family: 'Helvetica Neue', Arial, sans-serif;
                         background-color: #ffffff;
-                        color: #222222;
-                        padding: 25px;
-                        border-radius: 8px;
-                        border: 1px solid #e0e0e0;
-                        font-size: 18px; /* 文字を少し大きく */
-                        line-height: 1.8; /* 行間を広めに */
-                        box-shadow: 0 2px 5px rgba(0,0,0,0.05);
-                        text-align: justify; /* 両端揃えで見やすく */
+                        color: #333;
+                        padding: 30px;
+                        border-radius: 5px;
+                        border: 1px solid #ddd;
+                        line-height: 1.8;
+                        font-size: 18px;
                     }
-                    .word-link { 
-                        color: #222222; 
+                    .w { 
                         text-decoration: none; 
+                        color: #333; 
                         cursor: pointer; 
-                        padding: 0 2px;
-                    }
-                    .word-link:hover { 
-                        background-color: #e3f2fd; 
-                        color: #1565c0;
+                        padding: 2px 1px;
                         border-radius: 3px;
                     }
-                    /* 翻訳済み単語（黄色マーカー） */
-                    .highlighted {
-                        background-color: #fff9c4; 
-                        border-bottom: 2px solid #fbc02d;
-                        color: #000000;
+                    .w:hover { background-color: #eee; }
+                    /* 選択済みマーカー（黄色） */
+                    .marked {
+                        background-color: #fff176; 
+                        border-bottom: 2px solid #fdd835;
+                        color: #000;
+                        font-weight: bold;
                     }
                 </style>
-                <div class='pdf-container'>
+                <div class='pdf-box'>
                 """
-
-                words = clean_text.split()
-                # 単語リストを辞書化（クリック判定用）
-                id_to_word = {}
                 
-                for i, w in enumerate(words):
-                    current_id = f"w{i}"
-                    id_to_word[current_id] = w
+                # 改行を <br> に変換しつつ単語リンクを作る
+                # splitlinesで行ごとに処理
+                lines = clean_text.split('\n')
+                
+                for line_idx, line in enumerate(lines):
+                    words = line.split()
+                    for word_idx, w in enumerate(words):
+                        # 記号除去
+                        clean_w = w.strip(".,!?\"'()[]{}:;")
+                        if not clean_w:
+                            html_content += w + " "
+                            continue
+                            
+                        # IDに単語そのものを埋め込む (形式: p{ページ}l{行}i{連番}_{単語})
+                        # これで後から単語を復元できる
+                        unique_id = f"{page_num}l{line_idx}i{word_idx}_{clean_w}"
+                        
+                        css_class = "w"
+                        if unique_id in st.session_state.clicked_ids:
+                            css_class += " marked"
+                        
+                        safe_w = html.escape(w)
+                        html_content += f"<a href='#' id='{unique_id}' class='{css_class}'>{safe_w}</a> "
                     
-                    # 記号を除去して表示用の単語を作る
-                    safe_w = html.escape(w)
-                    
-                    # 既にクリックされた単語ならマーカークラスをつける
-                    css_class = "word-link"
-                    if current_id in st.session_state.clicked_ids:
-                        css_class += " highlighted"
-                    
-                    html_content += f"<a href='#' id='{current_id}' class='{css_class}'>{safe_w}</a> "
+                    html_content += "<br>" # 行末に改行タグ
                 
                 html_content += "</div>"
-
+                
                 # クリック検知
-                clicked_id = click_detector(html_content)
-
-                # --- クリック時の処理 ---
-                if clicked_id and clicked_id != st.session_state.last_clicked_id:
-                    st.session_state.last_clicked_id = clicked_id
-                    st.session_state.clicked_ids.add(clicked_id) # マーカー用に記憶
-                    
-                    # 翻訳対象の単語を取得
-                    if clicked_id in id_to_word:
-                        target_word = id_to_word[clicked_id]
-                        clean_word = target_word.strip(".,!?\"'()[]{}:;")
-                        
-                        if clean_word:
-                            # OpenAIで辞書検索
-                            # 暗転を防ぐため st.spinner は使わず、トースト通知だけ出す
-                            st.toast(f"🔍 Searching: {clean_word}...", icon="🤖")
-                            
-                            try:
-                                result = translate_with_gpt(clean_word)
-                                
-                                # 結果をセッションに保存（画面再描画用）
-                                st.session_state.current_translation = {
-                                    "word": clean_word,
-                                    "result": result
-                                }
-
-                                # スプレッドシート保存（バックグラウンド的に実行）
-                                client = get_gspread_client()
-                                sheet_name = st.secrets["sheet_config"]["sheet_name"]
-                                sheet = client.open(sheet_name).sheet1
-                                date_str = datetime.now().strftime("%Y-%m-%d")
-                                row = [clean_word, result["meaning"], date_str]
-                                sheet.append_row(row)
-                                
-                            except Exception as e:
-                                st.error(f"Error: {e}")
-                    
-                    # 画面更新（これでマーカーが反映される）
+                clicked = click_detector(html_content)
+                
+                if clicked:
+                    # クリックされたらセットに追加/削除（トグル動作）
+                    if clicked in st.session_state.clicked_ids:
+                        st.session_state.clicked_ids.remove(clicked)
+                    else:
+                        st.session_state.clicked_ids.add(clicked)
                     st.rerun()
 
-            else:
-                st.warning("No text extracted from this page.")
-    except Exception as e:
-        col1.error(f"Error reading PDF: {e}")
+            # --- 右カラム: 翻訳結果リスト ---
+            with col_res:
+                st.markdown("### 💡 Word List")
+                
+                results = st.session_state.translated_results
+                if results:
+                    for word, info in results.items():
+                        st.markdown(f"""
+                        <div style="background:#f9f9f9; padding:10px; margin-bottom:10px; border-left:4px solid #4CAF50; border-radius:4px;">
+                            <div style="font-weight:bold; font-size:1.1em; color:#2e7d32;">{word}</div>
+                            <div style="font-size:0.9em; color:#555;"><i>{info.get('pos', '')}</i></div>
+                            <div style="font-weight:bold;">{info.get('meaning', '')}</div>
+                            <div style="font-size:0.85em; color:#666;">{info.get('details', '')}</div>
+                        </div>
+                        """, unsafe_allow_html=True)
+                else:
+                    if len(st.session_state.clicked_ids) > 0:
+                        st.info(f"👉 {len(st.session_state.clicked_ids)} words selected.\nClick 'Translate Selected Words' in the sidebar!")
+                    else:
+                        st.info("Tap words in the text to mark them.")
 
-# --- 右カラム：辞書結果表示エリア（固定表示） ---
-with col2:
-    st.markdown("### 💡 Dictionary")
-    
-    current = st.session_state.current_translation
-    if current:
-        word = current["word"]
-        res = current["result"]
-        
-        # 辞書カードのデザイン
-        st.markdown(f"""
-        <div style="padding: 20px; border: 2px solid #4CAF50; border-radius: 10px; background-color: #f9fff9;">
-            <h2 style="color: #2e7d32; margin-top: 0;">{word}</h2>
-            <p><b>{res['pos']}</b></p>
-            <hr>
-            <h3 style="color: #333;">{res['meaning']}</h3>
-            <p style="color: #666; font-size: 0.9em;">{res['details']}</p>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        st.caption("✅ Automatically saved to Spreadsheet")
-    else:
-        st.info("👈 Tap any word in the PDF to see the meaning here.")
+    except Exception as e:
+        st.error(f"Error: {e}")
+else:
+    st.info("👈 Please upload a PDF file.")
