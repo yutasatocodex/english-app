@@ -92,6 +92,7 @@ if "last_clicked" not in st.session_state:
 if "slots" not in st.session_state:
     st.session_state.slots = [None] * 10
 else:
+    # スロット数が合わない場合の補正
     if len(st.session_state.slots) < 10:
         st.session_state.slots += [None] * (10 - len(st.session_state.slots))
 
@@ -110,6 +111,7 @@ with st.expander("📂 Upload PDF Settings", expanded=True):
     else:
         page_num = 1
 
+# ファイルがある場合のみ表示（ここが修正ポイント：not Noneを追加）
 if uploaded_file is not None:
     # 2. 画面分割
     col_main, col_side = st.columns([4, 1])
@@ -119,7 +121,6 @@ if uploaded_file is not None:
         page = reader.pages[page_num - 1]
         blocks = format_text_advanced(page.extract_text())
 
-        # CSS調整
         html_content = """
         <style>
             /* PC・iPad用（基本設定） */
@@ -144,4 +145,155 @@ if uploaded_file is not None:
             @media only screen and (max-width: 768px) {
                 #scrollable-container {
                     /* 高さを画面の85%まで広げる */
-                    height
+                    height: 85vh !important;
+                    
+                    /* 余白と文字サイズをスマホ向けに調整 */
+                    padding: 20px !important;
+                    font-size: 18px !important;
+                    line-height: 1.7 !important;
+                }
+                .header-text {
+                    font-size: 1.3em !important;
+                    margin: 25px 0 15px 0 !important;
+                }
+                .p-text {
+                    text-align: left !important;
+                    margin-bottom: 20px !important;
+                }
+            }
+            /* ▲▲▲ ここまで ▲▲▲ */
+
+            .w { 
+                text-decoration: none; color: #2c3e50; cursor: pointer; 
+                border-bottom: 1px dotted #ccc; transition: all 0.1s; 
+            }
+            .w:hover { 
+                color: #d35400; border-bottom: 2px solid #d35400; background-color: #fff3e0; 
+            }
+        </style>
+        
+        <div id='scrollable-container'>
+        """
+        
+        word_counter = 0
+        for block in blocks:
+            b_type = block["type"]
+            text = block["text"]
+            
+            if b_type == "h":
+                html_content += f"<div class='header-text'>{html.escape(text)}</div>"
+                continue
+            elif b_type == "li":
+                html_content += "<div class='list-item'>"
+            else:
+                html_content += "<div class='p-text'>"
+
+            words = text.split()
+            for w in words:
+                clean_w = w.strip(".,!?\"'()[]{}:;")
+                if not clean_w:
+                    html_content += w + " "
+                    continue
+                unique_id = f"{word_counter}_{clean_w}"
+                safe_w = html.escape(w)
+                html_content += f"<a href='#' id='{unique_id}' class='w'>{safe_w}</a> "
+                word_counter += 1
+            html_content += "</div>"
+        
+        html_content += "</div>"
+        
+        clicked = click_detector(html_content, key="pdf_detector")
+
+    # --- 右側：辞書スロット ---
+    with col_side:
+        st.markdown("### 🗃️ Dictionary")
+        
+        if st.button("Reset", use_container_width=True):
+            st.session_state.slots = [None] * 10
+            st.rerun()
+
+        for i in range(10):
+            if i < len(st.session_state.slots):
+                slot_data = st.session_state.slots[i]
+            else:
+                slot_data = None
+            
+            if slot_data is None:
+                st.markdown(f"""
+                <div style="
+                    height: 100px;
+                    border: 2px dashed #e0e0e0;
+                    border-radius: 6px;
+                    margin-bottom: 10px;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    color: #ccc;
+                    font-size: 0.8em;
+                ">Slot {i+1}</div>
+                """, unsafe_allow_html=True)
+            else:
+                word = slot_data['word']
+                info = slot_data['info']
+                st.markdown(f"""
+                <div style="
+                    height: 100px; 
+                    border-left: 5px solid #66bb6a;
+                    background-color: #f9fff9;
+                    padding: 8px;
+                    margin-bottom: 10px;
+                    border-radius: 6px;
+                    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+                    overflow-y: auto;
+                ">
+                    <div style="display:flex; justify-content:space-between; align-items:baseline;">
+                        <span style="font-weight:bold; color:#2e7d32; font-size:1.0em;">{word}</span>
+                        <span style="background:#e8f5e9; color:#2e7d32; padding:1px 4px; border-radius:3px; font-size:0.7em;">{info.get('pos')}</span>
+                    </div>
+                    <div style="font-weight:bold; font-size:0.85em; margin-top:4px; color:#333; line-height:1.2;">{info.get('meaning')}</div>
+                    <div style="font-size:0.75em; color:#666; margin-top:2px;">{info.get('details')}</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+    # --- JSでスクロール制御 ---
+    components.html("""
+    <script>
+        setTimeout(function() {
+            const scrollBox = window.parent.document.getElementById('scrollable-container');
+            if (scrollBox) {
+                const savedPos = sessionStorage.getItem('scrollPos');
+                if (savedPos) {
+                    scrollBox.scrollTop = savedPos;
+                }
+                scrollBox.onscroll = function() {
+                    sessionStorage.setItem('scrollPos', scrollBox.scrollTop);
+                };
+            }
+        }, 300);
+    </script>
+    """, height=0)
+
+    # --- クリック処理 ---
+    if clicked and clicked != st.session_state.last_clicked:
+        st.session_state.last_clicked = clicked
+        target_word = clicked.split("_", 1)[1]
+        
+        result = translate_word_with_gpt(target_word)
+        
+        current_slots = st.session_state.slots
+        current_slots.pop()
+        current_slots.insert(0, {"word": target_word, "info": result})
+        st.session_state.slots = current_slots[:10] + [None] * (10 - len(current_slots))
+        
+        client = get_gspread_client()
+        if client:
+            try:
+                sheet = client.open(st.secrets["sheet_config"]["sheet_name"]).sheet1
+                today = datetime.now().strftime("%Y-%m-%d")
+                sheet.append_row([target_word, result["meaning"], today])
+            except: pass
+        
+        st.rerun()
+
+else:
+    st.info("👆 Please upload a PDF file above.")
