@@ -1,5 +1,5 @@
 import streamlit as st
-import streamlit.components.v1 as components # JS実行用
+import streamlit.components.v1 as components
 from pypdf import PdfReader
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
@@ -10,7 +10,7 @@ import re
 import json
 from openai import OpenAI
 
-# --- ページ設定 ---
+# --- ページ設定 (Wide Mode) ---
 st.set_page_config(layout="wide", page_title="AI Book Reader")
 
 # --- 設定: Google連携 ---
@@ -88,67 +88,69 @@ def format_text_advanced(text):
 # --- セッション初期化 ---
 if "last_clicked" not in st.session_state:
     st.session_state.last_clicked = ""
+# スロットを10個に増設
 if "slots" not in st.session_state:
-    st.session_state.slots = [None] * 5
+    st.session_state.slots = [None] * 10
 
 # ==========================================
 # アプリ画面
 # ==========================================
 st.title("📚 AI Book Reader")
 
-# サイドバー設定
-uploaded_file = st.sidebar.file_uploader("Upload PDF", type="pdf")
+# 1. ファイルアップロード（画面上部）
+with st.expander("📂 Upload PDF Settings", expanded=True):
+    uploaded_file = st.file_uploader("Choose a PDF file", type="pdf")
+    # ページ指定もここに配置
+    if uploaded_file is not None:
+        reader = PdfReader(uploaded_file)
+        total_pages = len(reader.pages)
+        page_num = st.number_input(f"Page (Total {total_pages})", 1, total_pages, 1)
+    else:
+        page_num = 1
+
+# スクロール位置復元用JS
+components.html("""
+<script>
+    const scrollBox = window.parent.document.getElementById('scrollable-container');
+    if (scrollBox) {
+        const savedPos = sessionStorage.getItem('scrollPos');
+        if (savedPos) scrollBox.scrollTop = savedPos;
+        scrollBox.onscroll = function() {
+            sessionStorage.setItem('scrollPos', scrollBox.scrollTop);
+        };
+    }
+</script>
+""", height=0)
 
 if uploaded_file is not None:
-    reader = PdfReader(uploaded_file)
-    page_num = st.sidebar.number_input("Page", 1, len(reader.pages), 1)
-
-    # ★スクロール位置を復元する魔法（JavaScript）★
-    # これが毎回実行され、前回の位置まで自動でスクロールします
-    components.html("""
-    <script>
-        const scrollBox = window.parent.document.getElementById('scrollable-container');
-        if (scrollBox) {
-            // 保存された位置があれば復元
-            const savedPos = sessionStorage.getItem('scrollPos');
-            if (savedPos) {
-                scrollBox.scrollTop = savedPos;
-            }
-            // スクロールするたびに位置を保存
-            scrollBox.onscroll = function() {
-                sessionStorage.setItem('scrollPos', scrollBox.scrollTop);
-            };
-        }
-    </script>
-    """, height=0)
-
-    # 画面分割
-    col_main, col_side = st.columns([7, 3])
+    # 2. 画面分割（左：読書[広め]、右：辞書[狭め]）
+    # 比率を [4, 1] にして本文を最大限広げる
+    col_main, col_side = st.columns([4, 1])
 
     # --- 左側：読書エリア ---
     with col_main:
         page = reader.pages[page_num - 1]
         blocks = format_text_advanced(page.extract_text())
 
-        # HTML生成（高さを800pxに固定）
+        # HTML生成
         html_content = """
         <style>
             #scrollable-container {
-                height: 800px; /* ★ここを巨大にしました★ */
+                height: 85vh; /* 画面の高さいっぱい */
                 overflow-y: auto;
-                border: 1px solid #ddd;
+                border: 1px solid #e0e0e0;
                 border-radius: 8px;
-                padding: 40px;
-                background-color: #fff;
+                padding: 50px; /* 余白を広めに */
+                background-color: #ffffff;
                 font-family: 'Georgia', serif;
-                font-size: 20px; /* 文字も少し大きく */
-                line-height: 1.9;
+                font-size: 21px; /* 文字サイズ大きめ */
+                line-height: 2.0; /* 行間ゆったり */
                 color: #2c3e50;
-                box-shadow: inset 0 0 10px rgba(0,0,0,0.05);
+                box-shadow: 0 4px 6px rgba(0,0,0,0.05);
             }
-            .header-text { font-weight: bold; font-size: 1.4em; margin: 40px 0 20px 0; border-bottom: 2px solid #eee; color:#000; }
+            .header-text { font-weight: bold; font-size: 1.5em; margin: 40px 0 20px 0; border-bottom: 2px solid #eee; color:#000; }
             .list-item { margin-left: 20px; margin-bottom: 10px; border-left: 4px solid #eee; padding-left: 15px; }
-            .p-text { margin-bottom: 25px; text-align: justify; }
+            .p-text { margin-bottom: 30px; text-align: justify; }
             .w { 
                 text-decoration: none; color: #2c3e50; cursor: pointer; 
                 border-bottom: 1px dotted #ccc; transition: all 0.1s; 
@@ -186,33 +188,35 @@ if uploaded_file is not None:
                 word_counter += 1
             html_content += "</div>"
         
-        html_content += "</div>" # Close container
+        html_content += "</div>"
         
-        # クリック検知
         clicked = click_detector(html_content, key="pdf_detector")
 
-    # --- 右側：辞書スロット ---
+    # --- 右側：辞書スロット（10個） ---
     with col_side:
-        st.subheader("Dictionary 🗃️")
+        st.markdown("### 🗃️ Dictionary")
         
-        if st.button("Reset Slots", use_container_width=True):
-            st.session_state.slots = [None] * 5
+        if st.button("Reset", use_container_width=True):
+            st.session_state.slots = [None] * 10
             st.rerun()
 
-        for i in range(5):
+        # スロット表示ループ（10回）
+        for i in range(10):
             slot_data = st.session_state.slots[i]
             
             if slot_data is None:
+                # 空きスロット（場所確保）
                 st.markdown(f"""
                 <div style="
-                    height: 130px;
-                    border: 2px dashed #ddd;
-                    border-radius: 8px;
-                    margin-bottom: 15px;
+                    height: 100px;
+                    border: 2px dashed #e0e0e0;
+                    border-radius: 6px;
+                    margin-bottom: 10px;
                     display: flex;
                     align-items: center;
                     justify-content: center;
-                    color: #bbb;
+                    color: #ccc;
+                    font-size: 0.8em;
                 ">Slot {i+1}</div>
                 """, unsafe_allow_html=True)
             else:
@@ -220,39 +224,36 @@ if uploaded_file is not None:
                 info = slot_data['info']
                 st.markdown(f"""
                 <div style="
-                    height: 130px;
-                    border-left: 6px solid #66bb6a;
-                    background-color: #fff;
-                    padding: 12px;
-                    margin-bottom: 15px;
-                    border-radius: 8px;
-                    box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+                    height: 100px; /* 高さ固定 */
+                    border-left: 5px solid #66bb6a;
+                    background-color: #f9fff9;
+                    padding: 8px;
+                    margin-bottom: 10px;
+                    border-radius: 6px;
+                    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
                     overflow-y: auto;
                 ">
                     <div style="display:flex; justify-content:space-between; align-items:baseline;">
-                        <span style="font-weight:bold; color:#2e7d32; font-size:1.2em;">{word}</span>
-                        <span style="background:#e8f5e9; color:#2e7d32; padding:2px 6px; border-radius:4px; font-size:0.8em;">{info.get('pos')}</span>
+                        <span style="font-weight:bold; color:#2e7d32; font-size:1.0em;">{word}</span>
+                        <span style="background:#e8f5e9; color:#2e7d32; padding:1px 4px; border-radius:3px; font-size:0.7em;">{info.get('pos')}</span>
                     </div>
-                    <div style="font-weight:bold; font-size:1.0em; margin-top:6px; color:#333;">{info.get('meaning')}</div>
-                    <div style="font-size:0.85em; color:#666; margin-top:4px; line-height:1.3;">{info.get('details')}</div>
+                    <div style="font-weight:bold; font-size:0.85em; margin-top:4px; color:#333; line-height:1.2;">{info.get('meaning')}</div>
+                    <div style="font-size:0.75em; color:#666; margin-top:2px;">{info.get('details')}</div>
                 </div>
                 """, unsafe_allow_html=True)
 
-    # --- クリック時の処理 ---
+    # --- クリック処理 ---
     if clicked and clicked != st.session_state.last_clicked:
         st.session_state.last_clicked = clicked
         target_word = clicked.split("_", 1)[1]
         
-        # 翻訳実行
         result = translate_word_with_gpt(target_word)
         
-        # スロット更新 (新しいものを上に)
         current_slots = st.session_state.slots
-        current_slots.pop()
-        current_slots.insert(0, {"word": target_word, "info": result})
+        current_slots.pop() # 末尾を削除
+        current_slots.insert(0, {"word": target_word, "info": result}) # 先頭に追加
         st.session_state.slots = current_slots
         
-        # スプレッドシート保存
         client = get_gspread_client()
         if client:
             try:
@@ -264,4 +265,4 @@ if uploaded_file is not None:
         st.rerun()
 
 else:
-    st.info("👈 Upload PDF from the sidebar.")
+    st.info("👆 Please upload a PDF file above.")
