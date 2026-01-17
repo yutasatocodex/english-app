@@ -103,4 +103,45 @@ st.title("📚 AI Book Reader")
 # 1. ファイルアップロード
 with st.expander("📂 Upload PDF Settings", expanded=True):
     uploaded_file = st.file_uploader("Choose a PDF file", type="pdf")
-    if uploaded_file is
+    if uploaded_file is not None:
+        reader = PdfReader(uploaded_file)
+        total_pages = len(reader.pages)
+        page_num = st.number_input(f"Page (Total {total_pages})", 1, total_pages, 1)
+    else:
+        page_num = 1
+
+if uploaded_file is not None:
+    # 2. 画面分割
+    col_main, col_side = st.columns([4, 1])
+
+    # --- 左側：読書エリア ---
+    with col_main:
+        page = reader.pages[page_num - 1]
+        blocks = format_text_advanced(page.extract_text())
+
+        # CSS調整
+        html_content = """
+        <style>
+            /* PC・iPad用（基本設定） */
+            #scrollable-container {
+                height: 1000px;
+                overflow-y: auto;
+                border: 1px solid #e0e0e0;
+                border-radius: 8px;
+                padding: 50px;
+                background-color: #ffffff;
+                font-family: 'Georgia', serif;
+                font-size: 21px;
+                line-height: 2.0;
+                color: #2c3e50;
+                box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+            }
+            .header-text { font-weight: bold; font-size: 1.5em; margin: 40px 0 20px 0; border-bottom: 2px solid #eee; color:#000; }
+            .list-item { margin-left: 20px; margin-bottom: 10px; border-left: 4px solid #eee; padding-left: 15px; }
+            .p-text { margin-bottom: 30px; text-align: justify; }
+            
+            /* ▼▼▼ スマホ専用設定 (iPhone対応) ▼▼▼ */
+            @media only screen and (max-width: 768px) {
+                #scrollable-container {
+                    /* 高さを画面の85%まで広げる */
+                    height
