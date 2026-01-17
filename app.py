@@ -111,7 +111,7 @@ with st.expander("📂 Upload PDF Settings", expanded=True):
     else:
         page_num = 1
 
-# ファイルがある場合のみ表示（ここが修正ポイント：not Noneを追加）
+# ファイルがある場合のみ表示
 if uploaded_file is not None:
     # 2. 画面分割
     col_main, col_side = st.columns([4, 1])
@@ -125,7 +125,7 @@ if uploaded_file is not None:
         <style>
             /* PC・iPad用（基本設定） */
             #scrollable-container {
-                height: 1000px;
+                height: 1000px; /* ここがベースの高さ */
                 overflow-y: auto;
                 border: 1px solid #e0e0e0;
                 border-radius: 8px;
@@ -144,13 +144,12 @@ if uploaded_file is not None:
             /* ▼▼▼ スマホ専用設定 (iPhone対応) ▼▼▼ */
             @media only screen and (max-width: 768px) {
                 #scrollable-container {
-                    /* 高さを画面の85%まで広げる */
-                    height: 85vh !important;
+                    /* ★修正点：スマホでも強制的に1000pxにする★ */
+                    height: 1000px !important;
                     
-                    /* 余白と文字サイズをスマホ向けに調整 */
                     padding: 20px !important;
                     font-size: 18px !important;
-                    line-height: 1.7 !important;
+                    line-height: 1.8 !important;
                 }
                 .header-text {
                     font-size: 1.3em !important;
