@@ -25,12 +25,13 @@ def get_gspread_client():
     except:
         return None
 
-# --- 設定: OpenAI (チャンク＆発音抽出) ---
+# --- 設定: OpenAI (チャンク＆発音＆日本語ニュアンス) ---
 def analyze_chunk_with_gpt(target_word, context_sentence):
     client = OpenAI(api_key=st.secrets["openai"]["api_key"])
     
+    # ★ここを修正: 詳細(details)を「日本語で簡潔に」と指定★
     prompt = f"""
-    You are an expert English teacher.
+    You are an expert English teacher for Japanese students.
     The user is reading this text: "{context_sentence}"
     The user clicked the word: "{target_word}"
 
@@ -38,13 +39,14 @@ def analyze_chunk_with_gpt(target_word, context_sentence):
     1. Identify the meaningful "chunk" or collocation in this context.
     2. Provide the IPA pronunciation for that chunk.
     3. Provide the Japanese meaning.
+    4. Provide brief synonyms or nuance in JAPANESE.
 
     Output MUST be a JSON object with these keys:
     1. "chunk": The identified phrase (English).
     2. "pronunciation": IPA symbols (e.g. /həˈləʊ/).
-    3. "meaning": Japanese meaning.
+    3. "meaning": Japanese meaning (Concise).
     4. "pos": Part of Speech.
-    5. "details": Brief nuance.
+    5. "details": Synonyms, nuance, or usage note in JAPANESE (Max 30 chars).
     """
     
     try:
@@ -237,7 +239,6 @@ if uploaded_file is not None:
                 info = slot_data['info']
                 pron = info.get('pronunciation', '')
                 
-                # HTMLを整理してバグを防ぎつつ、箱を大きく・文字を小さく調整
                 st.markdown(f"""
                 <div style="height: 150px; border-left: 5px solid #2980b9; background-color: #f0f8ff; padding: 10px; margin-bottom: 10px; border-radius: 6px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); overflow-y: auto;">
                     <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:4px;">
