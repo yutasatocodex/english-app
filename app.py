@@ -25,7 +25,7 @@ def translate_with_gpt(text: str) -> str:
         model="gpt-4o-mini",
         messages=[
             {
-                "role": "system",
+                "role": "system", 
                 "content": (
                     "You are a professional translator. Translate the following English word or phrase "
                     "into Japanese directly. Output ONLY the Japanese meaning."
@@ -36,9 +36,11 @@ def translate_with_gpt(text: str) -> str:
     )
     return response.choices[0].message.content.strip()
 
-# --- セッションとメイン画面 ---
+# --- セッション状態の初期化 ---
 if "last_clicked_id" not in st.session_state:
     st.session_state.last_clicked_id = ""
+if "clicked_ids" not in st.session_state:
+    st.session_state.clicked_ids = set() # 翻訳済みの単語IDを保存する場所
 
 st.title("🤖 AI English PDF Note (Final)")
 
@@ -59,72 +61,122 @@ if uploaded_file is not None:
         if raw_text:
             st.subheader("📖 Tap a word to AI Translate")
 
-            # 🔥 重要: idは安全な連番にして、表示テキストだけescapeする
-            words = raw_text.split()
-
+            # --- HTML生成ロジックの改良 ---
+            # 背景を白、文字を黒に固定して見やすくするCSS
+            # 翻訳済み（highlighted）のデザインを追加
             html_content = """
             <style>
-                .word-link { color: #333; text-decoration: none; cursor: pointer; }
-                .word-link:hover { color: #e04400; text-decoration: underline; background-color: #f0f0f0;}
+                .pdf-container {
+                    background-color: #ffffff;
+                    color: #222222;
+                    padding: 20px;
+                    border-radius: 8px;
+                    border: 1px solid #ddd;
+                    font-size: 16px;
+                    line-height: 1.8;
+                    box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+                }
+                .word-link { 
+                    color: #222222; 
+                    text-decoration: none; 
+                    cursor: pointer; 
+                    padding: 2px 1px;
+                    border-radius: 3px;
+                }
+                .word-link:hover { 
+                    background-color: #e0e0e0; 
+                    text-decoration: underline;
+                }
+                /* 翻訳済み単語のスタイル（黄色いマーカー風） */
+                .highlighted {
+                    background-color: #fffacd; /* 薄い黄色 */
+                    border-bottom: 2px solid #ffd700; /* 濃い黄色の下線 */
+                    font-weight: bold;
+                    color: #000000;
+                }
             </style>
-            <div style='font-size: 16px; line-height: 1.8; padding: 10px; border: 1px solid #ddd; border-radius: 5px;'>
+            <div class='pdf-container'>
             """
 
-            for i, w in enumerate(words):
-                disp = html.escape(w)
-                html_content += f"<a href='#' id='w{i}' class='word-link'>{disp}</a> "
+            # 改行を維持するために、行ごとに処理する
+            lines = raw_text.splitlines()
+            word_counter = 0 # 全体を通しての一意なID用
+            
+            # 後でクリック判定するために単語リストを再構築する辞書
+            id_to_word = {}
+
+            for line in lines:
+                words_in_line = line.split()
+                
+                # 空行の場合は改行だけ入れてスキップ
+                if not words_in_line:
+                    html_content += "<br><br>"
+                    continue
+
+                for w in words_in_line:
+                    safe_w = html.escape(w)
+                    current_id = f"w{word_counter}"
+                    id_to_word[current_id] = w
+                    
+                    # 既にクリックされた単語ならマーカークラスをつける
+                    css_class = "word-link"
+                    if current_id in st.session_state.clicked_ids:
+                        css_class += " highlighted"
+                    
+                    html_content += f"<a href='#' id='{current_id}' class='{css_class}'>{safe_w}</a> "
+                    word_counter += 1
+                
+                # 行の終わりに改行タグを追加
+                html_content += "<br>"
+            
             html_content += "</div>"
 
+            # クリック検知
             clicked_id = click_detector(html_content)
 
-            # クリックが安定するように「id」で判定
             if clicked_id and clicked_id != st.session_state.last_clicked_id:
                 st.session_state.last_clicked_id = clicked_id
+                
+                # 新しくクリックされたIDを記憶セットに追加
+                st.session_state.clicked_ids.add(clicked_id)
+                # 即座に画面を更新してマーカーを反映させる
+                st.rerun()
 
-                if clicked_id.startswith("w"):
-                    try:
-                        idx = int(clicked_id[1:])
-                        clicked_word = words[idx]
-                    except Exception:
-                        clicked_word = ""
+            # 翻訳処理（リロード後も実行するためにIDチェックはここでも行う）
+            if st.session_state.last_clicked_id in id_to_word:
+                 target_word = id_to_word[st.session_state.last_clicked_id]
+                 
+                 clean_word = target_word.strip(".,!?\"'()[]{}:;")
+                 
+                 if clean_word:
+                    # サイドバーなどに結果を表示（あるいはメインエリア下部）
+                    st.divider()
+                    st.markdown(f"### 🤖 Translating: **{clean_word}**")
+                    
+                    with st.spinner("Translating..."):
+                        try:
+                            # 翻訳実行
+                            translated_text = translate_with_gpt(clean_word)
+                            
+                            # スプレッドシート保存
+                            client = get_gspread_client()
+                            sheet_name = st.secrets["sheet_config"]["sheet_name"]
+                            sheet = client.open(sheet_name).sheet1
+                            
+                            date_str = datetime.now().strftime("%Y-%m-%d")
+                            row = [clean_word, translated_text, date_str]
+                            sheet.append_row(row)
+                            
+                            st.success(f"**意味:** {translated_text}")
+                            st.caption(f"✅ Saved to {sheet_name}")
 
-                    clean_word = clicked_word.strip(".,!?\"'()[]{}:;")
+                        except Exception as e:
+                            st.error(f"Error: {e}")
+                            st.code(traceback.format_exc())
 
-                    if clean_word:
-                        with st.spinner(f"🤖 AI Translating '{clean_word}'..."):
-                            try:
-                                translated_text = translate_with_gpt(clean_word)
-
-                                client = get_gspread_client()
-                                sheet_name = st.secrets["sheet_config"]["sheet_name"]
-                                sheet = client.open(sheet_name).sheet1
-
-                                date_str = datetime.now().strftime("%Y-%m-%d")
-                                row = [clean_word, translated_text, date_str]
-                                sheet.append_row(row)
-
-                                st.toast(f"✅ Saved: {clean_word} = {translated_text}", icon="🎉")
-                                st.info(f"**{clean_word}**: {translated_text}")
-
-                            except Exception as e:
-                                # ✅ ここが「<Response [200]>」問題を潰す本体
-                                st.error(f"{type(e).__name__}: {e!r}")
-                                st.code(traceback.format_exc())
-
-                                # 例外オブジェクトがResponseっぽいときは中身を出す
-                                if hasattr(e, "status_code") and hasattr(e, "text"):
-                                    st.write("status:", getattr(e, "status_code", None))
-                                    st.code(getattr(e, "text", "")[:3000])
-
-                                # Streamlit標準の例外表示（便利）
-                                st.exception(e)
-                else:
-                    st.warning("Clicked value was unexpected. (id format mismatch)")
         else:
             st.warning("No text found.")
     except Exception as e:
-        st.error(f"{type(e).__name__}: {e!r}")
-        st.code(traceback.format_exc())
-        st.exception(e)
+        st.error(f"Error reading PDF: {e}")
 else:
     st.info("👈 Upload PDF to start.")
