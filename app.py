@@ -89,7 +89,6 @@ def format_text_advanced(text):
 if "last_clicked" not in st.session_state:
     st.session_state.last_clicked = ""
 
-# スロット初期化（安全策：必ず10個にする）
 if "slots" not in st.session_state:
     st.session_state.slots = [None] * 10
 else:
@@ -101,7 +100,7 @@ else:
 # ==========================================
 st.title("📚 AI Book Reader")
 
-# 1. ファイルアップロード（画面上部）
+# 1. ファイルアップロード
 with st.expander("📂 Upload PDF Settings", expanded=True):
     uploaded_file = st.file_uploader("Choose a PDF file", type="pdf")
     if uploaded_file is not None:
@@ -120,24 +119,46 @@ if uploaded_file is not None:
         page = reader.pages[page_num - 1]
         blocks = format_text_advanced(page.extract_text())
 
+        # ★ここが変更点：スマホ対応のCSSを追加★
         html_content = """
         <style>
+            /* 基本スタイル（PC・iPad用） */
             #scrollable-container {
-                height: 1000px; /* ★ここを1000pxに固定！これで縮まない★ */
+                height: 1000px;
                 overflow-y: auto;
                 border: 1px solid #e0e0e0;
                 border-radius: 8px;
-                padding: 50px;
+                padding: 50px;       /* 広い余白 */
                 background-color: #ffffff;
                 font-family: 'Georgia', serif;
-                font-size: 21px; 
-                line-height: 2.0;
+                font-size: 21px;     /* 大きな文字 */
+                line-height: 2.0;    /* 広い行間 */
                 color: #2c3e50;
                 box-shadow: 0 4px 6px rgba(0,0,0,0.05);
             }
             .header-text { font-weight: bold; font-size: 1.5em; margin: 40px 0 20px 0; border-bottom: 2px solid #eee; color:#000; }
             .list-item { margin-left: 20px; margin-bottom: 10px; border-left: 4px solid #eee; padding-left: 15px; }
             .p-text { margin-bottom: 30px; text-align: justify; }
+            
+            /* ▼▼ スマホ専用スタイル（画面幅が768px以下のとき適用） ▼▼ */
+            @media only screen and (max-width: 768px) {
+                #scrollable-container {
+                    padding: 15px !important;    /* 余白を狭く */
+                    font-size: 16px !important;  /* 文字を小さく */
+                    line-height: 1.6 !important; /* 行間を詰める */
+                    height: 60vh !important;     /* スマホでは高さ60%くらいが丁度いい */
+                }
+                .header-text {
+                    font-size: 1.2em !important;
+                    margin: 20px 0 10px 0 !important;
+                }
+                .p-text {
+                    margin-bottom: 15px !important;
+                    text-align: left !important; /* スマホは左揃えの方が読みやすい */
+                }
+            }
+            /* ▲▲ ここまで ▲▲ */
+
             .w { 
                 text-decoration: none; color: #2c3e50; cursor: pointer; 
                 border-bottom: 1px dotted #ccc; transition: all 0.1s; 
@@ -231,8 +252,7 @@ if uploaded_file is not None:
                 </div>
                 """, unsafe_allow_html=True)
 
-    # --- ★重要: スクロール制御JSを最後に配置 ---
-    # 0.5秒待ってからスクロール位置を復元（描画待ち時間を少し延長）
+    # --- スクロール制御JS ---
     components.html("""
     <script>
         setTimeout(function() {
@@ -242,7 +262,6 @@ if uploaded_file is not None:
                 if (savedPos) {
                     scrollBox.scrollTop = savedPos;
                 }
-                
                 scrollBox.onscroll = function() {
                     sessionStorage.setItem('scrollPos', scrollBox.scrollTop);
                 };
@@ -258,12 +277,9 @@ if uploaded_file is not None:
         
         result = translate_word_with_gpt(target_word)
         
-        # リストを回転させる
         current_slots = st.session_state.slots
-        current_slots.pop() # 末尾を削除
-        current_slots.insert(0, {"word": target_word, "info": result}) # 先頭に追加
-        
-        # 安全策
+        current_slots.pop()
+        current_slots.insert(0, {"word": target_word, "info": result})
         st.session_state.slots = current_slots[:10] + [None] * (10 - len(current_slots))
         
         client = get_gspread_client()
