@@ -1,0 +1,7 @@
+streamlit
+pandas
+pypdf
+deep-translator
+gspread
+oauth2client
+st-click-detector
