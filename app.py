@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from pypdf import PdfReader
-from deep_translator import GoogleTranslator
+from deep_translator import MyMemoryTranslator
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
@@ -71,7 +71,7 @@ if uploaded_file is not None:
                 with st.spinner(f"Translating '{clean_word}'..."):
                     try:
                         # 翻訳
-                        translator = GoogleTranslator(source='auto', target='ja')
+                        translator = MyMemoryTranslator(source='en', target='ja')
                         translated_text = translator.translate(clean_word)
                         
                         # スプレッドシート保存
