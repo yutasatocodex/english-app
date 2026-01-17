@@ -35,7 +35,7 @@ def translate_with_gpt(text):
 if 'last_clicked' not in st.session_state:
     st.session_state.last_clicked = ""
 
-st.title("🤖 AI English PDF Note")
+st.title("TEST VERSION CHECK")
 
 # サイドバー: PDFアップロード
 st.sidebar.header("Upload PDF")
