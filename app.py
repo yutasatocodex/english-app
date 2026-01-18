@@ -1,7 +1,7 @@
 import streamlit as st
 from pypdf import PdfReader
 import gspread
-from google.oauth2.service_account import Credentials # ★ここが変わりました
+from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 from st_click_detector import click_detector
@@ -26,10 +26,8 @@ scope = [
 
 def get_clients():
     try:
-        # StreamlitのSecretsから情報を取得
         creds_dict = dict(st.secrets["gcp_service_account"])
-        
-        # ★修正: 最新の認証方式 (google-auth) を使用★
+        # 最新の認証ライブラリを使用
         creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
         
         # 1. GSpread (シート用)
@@ -74,7 +72,7 @@ def analyze_chunk_with_gpt(target_word, context_text):
     except:
         return {"chunk": target_word, "pronunciation": "", "meaning": "Error", "pos": "-", "original_sentence": "", "image_prompt": ""}
 
-# --- 画像生成 & Drive保存 ---
+# --- 画像生成 & Drive保存 (デバッグ仕様) ---
 def generate_and_upload_image(image_prompt, word_key, drive_service):
     hash_object = hashlib.md5(word_key.encode())
     seed = int(hash_object.hexdigest(), 16) % 100000
@@ -84,15 +82,17 @@ def generate_and_upload_image(image_prompt, word_key, drive_service):
     image_url = f"https://image.pollinations.ai/prompt/{safe_prompt}?width=512&height=512&model=flux&nologo=true&seed={seed}"
     
     try:
+        # 画像ダウンロード
         response = requests.get(image_url, timeout=20)
         
         if response.status_code == 200:
             image_data = io.BytesIO(response.content)
             
+            # Google Driveにアップロード
             file_metadata = {
                 'name': f"{word_key}_{seed}.jpg",
                 'mimeType': 'image/jpeg',
-                'parents': ['1dcbr2GIzWdJPhGDw_5VG2uS-_lYveKyo'] # ★フォルダID
+                'parents': ['1dcbr2GIzWdJPhGDw_5VG2uS-_lYveKyo'] # ★あなたのフォルダID
             }
             media = MediaIoBaseUpload(image_data, mimetype='image/jpeg')
             
@@ -102,6 +102,7 @@ def generate_and_upload_image(image_prompt, word_key, drive_service):
                 fields='id, webContentLink'
             ).execute()
             
+            # 権限変更
             drive_service.permissions().create(
                 fileId=file.get('id'),
                 body={'type': 'anyone', 'role': 'reader'},
@@ -109,13 +110,12 @@ def generate_and_upload_image(image_prompt, word_key, drive_service):
             ).execute()
             
             return file.get('webContentLink')
+        else:
+            return f"DEBUG_ERROR: Pollinations status {response.status_code}"
             
     except Exception as e:
-        # 画面にエラー内容を表示してデバッグしやすくする
-        st.warning(f"Upload Failed: {e}") 
-        return image_url
-    
-    return image_url
+        # ★エラー内容をそのまま返す（シートに書き込ませるため）
+        return f"DEBUG_ERROR: {str(e)}"
 
 # --- テキスト解析 ---
 def parse_pdf_to_structured_blocks(text):
@@ -330,22 +330,27 @@ else:
             context_text = " ".join([b["text"] for b in current_blocks])
             
             with st.spinner("Analyzing..."):
+                # 1. AI分析
                 result = analyze_chunk_with_gpt(target_word, context_text)
                 
+                # 2. 一文抽出
                 original_sentence = result.get('original_sentence', '')
                 if not original_sentence or len(original_sentence) > 150:
                     original_sentence = extract_sentence_python(context_text, target_word)
                 
+                # 3. 画像生成 (ONの場合)
                 final_image_url = ""
                 if st.session_state.enable_image_gen:
                     with st.spinner("🎨 Creating Image & Uploading to Drive..."):
                         image_prompt = result.get('image_prompt', target_word)
                         gc_client, drive_service = get_clients()
                         if drive_service:
+                            # 戻り値に「DEBUG_ERROR」が含まれていたら、それをそのままE列に入れる
                             final_image_url = generate_and_upload_image(image_prompt, target_word, drive_service)
                         else:
-                            final_image_url = ""
+                            final_image_url = "DEBUG_ERROR: Could not connect to Drive Service"
                 
+                # 4. シート保存
                 client, _ = get_clients()
                 if client:
                     try:
@@ -354,6 +359,7 @@ else:
                         sheet.append_row([result['chunk'], result.get('pronunciation', ''), meaning_full, original_sentence, final_image_url])
                     except: pass
                 
+                # 5. UI更新
                 curr = st.session_state.slots
                 curr.pop()
                 curr.insert(0, {"chunk": result["chunk"], "info": result})
