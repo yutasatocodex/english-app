@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 from pypdf import PdfReader
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
@@ -56,41 +57,83 @@ def analyze_chunk_with_gpt(target_word, context_sentence):
     except Exception:
         return {"chunk": target_word, "pronunciation": "", "meaning": "Error", "pos": "-"}
 
-# --- テキスト整形 ---
-def format_text_advanced(text):
+# --- テキスト構造解析 (ここが心臓部) ---
+def parse_pdf_to_structured_blocks(text):
+    """
+    PDFの全テキストを、意味のあるブロック(見出し、段落、リスト)のリストに変換する。
+    """
     if not text: return []
-    # 改行を一度スペースに置換して繋げる（自然な流し込みのため）
-    # ただし、段落の区切りっぽいやつは残したいので調整
     lines = text.splitlines()
-    formatted_blocks = []
-    current_paragraph = ""
+    blocks = []
+    current_text = ""
+    current_type = "p" # デフォルトは段落
+
     sentence_endings = ('.', ',', '!', '?', ':', ';', '"', "'", '”', '’', ')', ']')
 
     for line in lines:
         line = line.strip()
         if not line: continue
-        is_bullet = re.match(r'^([•·\-\*]|\d+\.)', line)
-        is_header = line.isupper() or re.match(r'^(Chapter|Section|\d+\s+[A-Z])', line, re.IGNORECASE)
 
+        # 見出し・リストの判定
+        is_bullet = re.match(r'^([•·\-\*]|\d+\.)', line)
+        is_short = len(line) < 80 and not line.endswith(sentence_endings)
+        is_header_pattern = (line.isupper() or re.match(r'^(Chapter|Section|\d+\s+[A-Z])', line, re.IGNORECASE))
+        is_header = is_short and (not is_bullet) and is_header_pattern
+
+        # 前のブロックを確定させる条件
         if is_header or is_bullet:
-            if current_paragraph:
-                formatted_blocks.append({"type": "p", "text": current_paragraph})
-                current_paragraph = ""
+            if current_text:
+                blocks.append({"type": current_type, "text": current_text})
+                current_text = ""
+            
             if is_header:
-                formatted_blocks.append({"type": "h", "text": line})
+                blocks.append({"type": "h", "text": line})
             else:
-                formatted_blocks.append({"type": "li", "text": line})
+                blocks.append({"type": "li", "text": line})
         else:
-            if current_paragraph:
-                if current_paragraph.endswith("-"):
-                    current_paragraph = current_paragraph[:-1] + line
+            # 通常の段落結合処理
+            if current_text:
+                if current_text.endswith("-"):
+                    current_text = current_text[:-1] + line
                 else:
-                    current_paragraph += " " + line
+                    current_text += " " + line
             else:
-                current_paragraph = line
-    if current_paragraph:
-        formatted_blocks.append({"type": "p", "text": current_paragraph})
-    return formatted_blocks
+                current_text = line
+                current_type = "p"
+    
+    # 残りのテキストを追加
+    if current_text:
+        blocks.append({"type": current_type, "text": current_text})
+    
+    return blocks
+
+def group_blocks_into_screens(blocks, words_per_screen=350):
+    """
+    構造化されたブロックを、指定した単語数を目安にスクリーン(ページ)にまとめる。
+    段落の途中で切らないように調整する。
+    """
+    screens = []
+    current_screen = []
+    current_word_count = 0
+
+    for block in blocks:
+        # このブロックの単語数
+        block_word_count = len(block["text"].split())
+        
+        # 追加するとあふれる場合、かつ、現在のスクリーンにある程度入っている場合
+        if current_word_count + block_word_count > words_per_screen and current_word_count > 100:
+            screens.append(current_screen)
+            current_screen = []
+            current_word_count = 0
+        
+        current_screen.append(block)
+        current_word_count += block_word_count
+    
+    # 最後の残り
+    if current_screen:
+        screens.append(current_screen)
+    
+    return screens
 
 # --- セッション初期化 ---
 if "last_clicked" not in st.session_state:
@@ -101,92 +144,95 @@ else:
     if len(st.session_state.slots) < 10:
         st.session_state.slots += [None] * (10 - len(st.session_state.slots))
 
-# PDF全テキストと現在の「画面番号」を保存
-if "all_text_chunks" not in st.session_state:
-    st.session_state.all_text_chunks = []
-if "current_chunk_index" not in st.session_state:
-    st.session_state.current_chunk_index = 0
+if "all_screens" not in st.session_state:
+    st.session_state.all_screens = []
+if "current_screen_index" not in st.session_state:
+    st.session_state.current_screen_index = 0
 if "file_id" not in st.session_state:
     st.session_state.file_id = ""
 
 # ==========================================
 # アプリ画面
 # ==========================================
-st.title("📚 AI Book Reader (One Screen)")
+st.title("📚 AI Book Reader")
 
-# 1. ファイルアップロード & テキスト分割処理
+# 1. ファイルアップロード & 構造化処理
 with st.expander("📂 Upload PDF", expanded=True):
     uploaded_file = st.file_uploader("Choose PDF", type="pdf")
     
     if uploaded_file is not None:
-        # ファイルが変わったらリセット
         if st.session_state.file_id != uploaded_file.name:
             st.session_state.file_id = uploaded_file.name
             reader = PdfReader(uploaded_file)
             
-            # 全ページを結合して取得
             full_text = ""
             for page in reader.pages:
                 full_text += page.extract_text() + "\n"
             
-            # --- ここで「1画面分」に分割するロジック ---
-            # 1画面 = 約350単語と定義 (iPadで見やすい量)
-            words = full_text.split()
-            chunk_size = 350
-            chunks = []
-            for i in range(0, len(words), chunk_size):
-                chunk_words = words[i:i + chunk_size]
-                chunks.append(" ".join(chunk_words))
-            
-            st.session_state.all_text_chunks = chunks
-            st.session_state.current_chunk_index = 0
+            # 1. まず構造(ブロック)を解析
+            structured_blocks = parse_pdf_to_structured_blocks(full_text)
+            # 2. ブロック単位で画面に振り分け
+            st.session_state.all_screens = group_blocks_into_screens(structured_blocks, words_per_screen=400) # 少し増やしました
+            st.session_state.current_screen_index = 0
             st.rerun()
 
 # 2. メイン表示部
-if st.session_state.all_text_chunks:
+if st.session_state.all_screens:
     col_main, col_side = st.columns([4, 1])
 
     with col_main:
-        # ページ送りボタン
+        # ナビゲーション
         c1, c2, c3 = st.columns([1, 2, 1])
         with c1:
             if st.button("◀ Prev"):
-                if st.session_state.current_chunk_index > 0:
-                    st.session_state.current_chunk_index -= 1
+                if st.session_state.current_screen_index > 0:
+                    st.session_state.current_screen_index -= 1
                     st.rerun()
         with c3:
             if st.button("Next ▶"):
-                if st.session_state.current_chunk_index < len(st.session_state.all_text_chunks) - 1:
-                    st.session_state.current_chunk_index += 1
+                if st.session_state.current_screen_index < len(st.session_state.all_screens) - 1:
+                    st.session_state.current_screen_index += 1
                     st.rerun()
         
-        # 現在の進捗表示
-        curr = st.session_state.current_chunk_index + 1
-        total = len(st.session_state.all_text_chunks)
+        curr = st.session_state.current_screen_index + 1
+        total = len(st.session_state.all_screens)
         st.progress(curr / total)
-        st.caption(f"Screen {curr} / {total}")
+        st.caption(f"Page {curr} / {total}")
 
-        # テキスト表示
-        current_text = st.session_state.all_text_chunks[st.session_state.current_chunk_index]
-        blocks = format_text_advanced(current_text)
+        # 現在のスクリーンのブロックを取得
+        current_blocks = st.session_state.all_screens[st.session_state.current_screen_index]
 
         html_content = """
         <style>
-            /* 画面いっぱいに使い、スクロールバーを出さない(ページ内で完結させる)設計 */
             .book-container {
                 background-color: #ffffff;
                 border: 1px solid #e0e0e0;
                 border-radius: 8px;
-                padding: 20px 30px; /* 余白を削る */
+                padding: 30px;
                 font-family: 'Georgia', serif;
-                font-size: 17px;     /* 文字サイズ微調整 */
-                line-height: 1.6;    /* 行間を詰める */
+                font-size: 18px;     
+                line-height: 1.6;    
                 color: #2c3e50;
-                min-height: 600px;   /* 最低限の高さを確保 */
+                min-height: 600px;
             }
-            .header-text { font-weight: bold; font-size: 1.3em; margin: 20px 0 10px 0; border-bottom: 2px solid #eee; color:#000; }
-            .list-item { margin-left: 15px; margin-bottom: 5px; border-left: 3px solid #eee; padding-left: 10px; }
-            .p-text { margin-bottom: 15px; text-align: justify; }
+            .header-text { 
+                font-weight: bold; 
+                font-size: 1.4em; 
+                margin: 25px 0 15px 0; 
+                border-bottom: 2px solid #eee; 
+                color: #000;
+                line-height: 1.3;
+            }
+            .list-item { 
+                margin-left: 20px; 
+                margin-bottom: 8px; 
+                border-left: 3px solid #eee; 
+                padding-left: 10px; 
+            }
+            .p-text { 
+                margin-bottom: 20px; 
+                text-align: justify; 
+            }
             
             .w { 
                 text-decoration: none; color: #2c3e50; cursor: pointer; 
@@ -199,12 +245,14 @@ if st.session_state.all_text_chunks:
         <div class='book-container'>
         """
         
-        for b_idx, block in enumerate(blocks):
+        word_counter = 0
+        for block in current_blocks:
             b_type = block["type"]
             text = block["text"]
             
             if b_type == "h":
                 html_content += f"<div class='header-text'>{html.escape(text)}</div>"
+                # 見出し内の単語はクリック対象にしない（見やすさ優先）
                 continue
             elif b_type == "li":
                 html_content += "<div class='list-item'>"
@@ -212,18 +260,20 @@ if st.session_state.all_text_chunks:
                 html_content += "<div class='p-text'>"
 
             words = text.split()
-            for w_idx, w in enumerate(words):
+            for w in words:
                 clean_w = w.strip(".,!?\"'()[]{}:;")
                 if not clean_w:
                     html_content += w + " "
                     continue
-                unique_id = f"wd{w_idx}_{clean_w}" # シンプルなID
+                unique_id = f"wd{word_counter}_{clean_w}"
                 safe_w = html.escape(w)
                 html_content += f"<a href='#' id='{unique_id}' class='w'>{safe_w}</a> "
+                word_counter += 1
             html_content += "</div>"
         html_content += "</div>"
 
-        clicked = click_detector(html_content, key=f"det_{st.session_state.current_chunk_index}")
+        # 画面ごとにキーを変えてリセットを防ぐ
+        clicked = click_detector(html_content, key=f"det_scr_{st.session_state.current_screen_index}")
 
     with col_side:
         st.markdown("### 🗃️ Dict")
@@ -259,8 +309,10 @@ if st.session_state.all_text_chunks:
         parts = clicked.split("_", 1)
         if len(parts) == 2:
             target_word = parts[1]
-            # 現在表示中のテキスト全体を文脈として渡す
-            context_sentence = st.session_state.all_text_chunks[st.session_state.current_chunk_index]
+            
+            # 文脈取得: 現在の画面のテキストを結合して送る
+            current_blocks = st.session_state.all_screens[st.session_state.current_screen_index]
+            context_sentence = " ".join([b["text"] for b in current_blocks])
             
             result = analyze_chunk_with_gpt(target_word, context_sentence)
             
@@ -274,7 +326,7 @@ if st.session_state.all_text_chunks:
                 try:
                     sheet = client.open(st.secrets["sheet_config"]["sheet_name"]).sheet1
                     meaning_full = f"{result['meaning']} ({result['pos']})"
-                    sheet.append_row([result['chunk'], result.get('pronunciation', ''), meaning_full, context_sentence[:200]+"..." ])
+                    sheet.append_row([result['chunk'], result.get('pronunciation', ''), meaning_full, context_sentence[:300]+"..." ])
                 except: pass
             st.rerun()
 
