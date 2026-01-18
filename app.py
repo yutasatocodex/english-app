@@ -1,7 +1,7 @@
 import streamlit as st
 from pypdf import PdfReader
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+from google.oauth2.service_account import Credentials # ★ここを最新版に修正
 from st_click_detector import click_detector
 import html
 import re
@@ -12,12 +12,16 @@ from openai import OpenAI
 st.set_page_config(layout="wide", page_title="AI Book Reader", initial_sidebar_state="collapsed")
 
 # --- 設定: Google Sheets連携 ---
-scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+scope = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive"
+]
 
 def get_gspread_client():
     try:
         creds_dict = dict(st.secrets["gcp_service_account"])
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+        # ★ここを最新の書き方に修正 (oauth2client -> google-auth)
+        creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
         client = gspread.authorize(creds)
         return client
     except Exception as e:
@@ -28,7 +32,6 @@ def get_gspread_client():
 def analyze_chunk_with_gpt(target_word, context_text):
     client = OpenAI(api_key=st.secrets["openai"]["api_key"])
     
-    # 指示：UIには単語と意味だけ出すが、シート用に例文もしっかり抽出させる
     prompt = f"""
     The user is reading: "{context_text}"
     Target word: "{target_word}"
@@ -104,7 +107,7 @@ def group_blocks_into_screens(blocks, words_per_screen=500):
 if "last_clicked" not in st.session_state:
     st.session_state.last_clicked = ""
 if "slots" not in st.session_state:
-    st.session_state.slots = [None] * 9 # リストを少し増やして一覧性アップ
+    st.session_state.slots = [None] * 9
 if "reader_mode" not in st.session_state:
     st.session_state.reader_mode = False
 if "all_screens" not in st.session_state:
@@ -135,7 +138,7 @@ st.markdown("""
         padding: 6px 8px;
         margin-bottom: 4px;
         border-radius: 4px;
-        height: auto; /* 高さは中身に合わせる */
+        height: auto;
         min-height: 60px;
     }
     .dict-header {
@@ -257,20 +260,16 @@ else:
             html_content += "</div>"
             clicked = click_detector(html_content, key=f"det_{st.session_state.current_screen_index}")
 
-    # --- 右: 辞書リスト (超シンプル版: 単語・品詞・意味のみ) ---
+    # --- 右: 辞書リスト ---
     with col_dict:
-        # スロット数を9に増やして一覧性を確保
         for i in range(9):
             slot_data = st.session_state.slots[i] if i < len(st.session_state.slots) else None
             
             if slot_data is None:
-                # 空のスロット
                 st.markdown(f"<div style='height: 60px; margin-bottom: 4px; border: 1px dashed #f0f0f0; border-radius: 4px;'></div>", unsafe_allow_html=True)
             else:
                 chunk = slot_data['chunk']
                 info = slot_data['info']
-                
-                # 発音記号や例文は表示しない。意味だけズバリ表示。
                 st.markdown(f"""
                 <div class="dict-card">
                     <div class="dict-header">
@@ -293,10 +292,10 @@ else:
             # AI分析 (高速)
             result = analyze_chunk_with_gpt(target_word, context_text)
             
-            # 例文抽出 (UIには出さないが、保存用に確保)
+            # 例文抽出 (保存用)
             original_sentence = result.get('original_sentence', '')
             
-            # シート保存 (単語, 発音, 意味+品詞, 例文, 画像なし)
+            # シート保存
             client = get_gspread_client()
             if client:
                 try:
@@ -306,8 +305,8 @@ else:
                         result['chunk'], 
                         result.get('pronunciation', ''), 
                         meaning_full, 
-                        original_sentence, # 例文はしっかり保存
-                        "" # 画像URLは空欄
+                        original_sentence, 
+                        ""
                     ])
                 except: pass
             
