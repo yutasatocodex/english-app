@@ -8,9 +8,10 @@ import html
 import re
 import json
 import urllib.parse
+import random
 from openai import OpenAI
 
-# --- ページ設定 ---
+# --- ページ設定 (サイドバーなし・ワイド) ---
 st.set_page_config(layout="wide", page_title="AI Book Reader", initial_sidebar_state="collapsed")
 
 # --- 設定: Google連携 ---
@@ -25,10 +26,11 @@ def get_gspread_client():
     except:
         return None
 
-# --- 設定: OpenAI (テキスト解析は激安gpt-4o-mini) ---
+# --- 設定: OpenAI (画像プロンプト職人化) ---
 def analyze_chunk_with_gpt(target_word, context_text):
     client = OpenAI(api_key=st.secrets["openai"]["api_key"])
     
+    # ★修正: 画像プロンプト(image_prompt)の指示を具体的に強化★
     prompt = f"""
     The user is reading: "{context_text}"
     Target word: "{target_word}"
@@ -38,7 +40,11 @@ def analyze_chunk_with_gpt(target_word, context_text):
     2. IPA pronunciation.
     3. Japanese meaning (Concise).
     4. Extract the ONE specific sentence containing the target word.
-    5. Create a short English image prompt (max 5 words) to visualize this word/chunk (e.g. "a cat running in park illustration").
+    5. Create a CREATIVE image prompt to memorize this word.
+       - Do NOT use text or letters in the image.
+       - Use visual metaphors.
+       - Example: For "summarize", describe "a funnel squeezing many colorful balls into one drop".
+       - Style: "Studio Ghibli anime style, vibrant colors".
 
     Output JSON:
     1. "chunk": English phrase.
@@ -46,7 +52,7 @@ def analyze_chunk_with_gpt(target_word, context_text):
     3. "meaning": Japanese meaning.
     4. "pos": Part of Speech.
     5. "original_sentence": The single sentence.
-    6. "image_prompt": Short keyword for image generation.
+    6. "image_prompt": The visual description (English).
     """
     try:
         response = client.chat.completions.create(
@@ -59,14 +65,17 @@ def analyze_chunk_with_gpt(target_word, context_text):
         )
         return json.loads(response.choices[0].message.content)
     except Exception:
-        return {"chunk": target_word, "pronunciation": "", "meaning": "Error", "pos": "-", "original_sentence": "", "image_prompt": "book illustration"}
+        return {"chunk": target_word, "pronunciation": "", "meaning": "Error", "pos": "-", "original_sentence": "", "image_prompt": "illustration of a book"}
 
 # --- 設定: 無料画像生成 (Pollinations.ai) ---
 def get_free_image_url(image_prompt):
-    # プロンプトをURLエンコード
-    safe_prompt = urllib.parse.quote(f"{image_prompt} digital art illustration, minimal, clean")
-    # 乱数をつけないとキャッシュされるので、時間を付与してもいいが、今回はシンプルに
-    return f"https://image.pollinations.ai/prompt/{safe_prompt}?width=300&height=300&nologo=true"
+    # プロンプトにスタイルを強制付与 & 乱数(seed)で毎回違う絵にする
+    seed = random.randint(0, 10000)
+    # text, word などの単語が入ると文字が書かれやすいので除外するおまじない
+    refined_prompt = f"{image_prompt}, masterpiece, best quality, no text, no letters, no words"
+    safe_prompt = urllib.parse.quote(refined_prompt)
+    
+    return f"https://image.pollinations.ai/prompt/{safe_prompt}?width=300&height=300&nologo=true&seed={seed}"
 
 # --- テキスト解析 ---
 def parse_pdf_to_structured_blocks(text):
@@ -291,10 +300,8 @@ else:
                 chunk = slot_data['chunk']
                 info = slot_data['info']
                 pron = info.get('pronunciation', '')
-                image_url = slot_data.get('image_url', '') # 画像URL取得
+                image_url = slot_data.get('image_url', '')
                 
-                # 画像がある場合とない場合でレイアウト調整
-                # 画像を右側に小さく表示
                 st.markdown(f"""
                 <div style="
                     height: 12.8vh;
@@ -307,15 +314,15 @@ else:
                     display: flex;
                     justify-content: space-between;
                 ">
-                    <div style="width: 70%;">
+                    <div style="width: 65%;">
                         <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:2px;">
-                            <span style="font-weight:bold; color:#1a5276; font-size:0.9em; overflow:hidden; white-space:nowrap; text-overflow:ellipsis;">{chunk}</span>
+                            <span style="font-weight:bold; color:#1a5276; font-size:0.9em; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; max-width:90%;">{chunk}</span>
                         </div>
                         <div style="font-size:0.7em; color:#777; margin-bottom:2px;">{pron}</div>
                         <div style="font-weight:bold; font-size:0.8em; color:#333; line-height:1.2; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow:hidden;">{info.get('meaning')}</div>
                     </div>
-                    <div style="width: 28%; display: flex; align-items: center; justify-content: center;">
-                        <img src="{image_url}" style="max-height: 100%; max-width: 100%; border-radius: 4px; object-fit: cover;">
+                    <div style="width: 32%; display: flex; align-items: center; justify-content: center; background:#fff; border-radius:4px;">
+                        <img src="{image_url}" style="width: 100%; height: 100%; object-fit: cover; border-radius: 4px;">
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
@@ -329,7 +336,6 @@ else:
             current_blocks = st.session_state.all_screens[st.session_state.current_screen_index]
             context_text = " ".join([b["text"] for b in current_blocks])
             
-            # AI分析 (画像プロンプト付き)
             result = analyze_chunk_with_gpt(target_word, context_text)
             
             # 抽出文の安全策
@@ -337,11 +343,9 @@ else:
             if not original_sentence or len(original_sentence) > 150:
                 original_sentence = extract_sentence_python(context_text, target_word)
             
-            # 画像生成 (無料URL生成)
+            # 画像生成
             image_prompt = result.get('image_prompt', target_word)
             image_url = get_free_image_url(image_prompt)
-            
-            # 結果に画像URLを追加
             result['image_url'] = image_url
             
             curr = st.session_state.slots
@@ -349,13 +353,11 @@ else:
             curr.insert(0, {"chunk": result["chunk"], "info": result, "image_url": image_url})
             st.session_state.slots = curr[:7] + [None] * (7 - len(curr))
             
-            # シート保存 (E列に画像URLを追加)
             client = get_gspread_client()
             if client:
                 try:
                     sheet = client.open(st.secrets["sheet_config"]["sheet_name"]).sheet1
                     meaning_full = f"{result['meaning']} ({result['pos']})"
-                    # [Chunk, Pron, Meaning, Sentence, ImageURL]
                     sheet.append_row([result['chunk'], result.get('pronunciation', ''), meaning_full, original_sentence, image_url])
                 except: pass
             st.rerun()
