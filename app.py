@@ -1,36 +1,52 @@
 import streamlit as st
-import streamlit.components.v1 as components
 from pypdf import PdfReader
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseUpload
 from st_click_detector import click_detector
 import html
 import re
 import json
 import urllib.parse
-import random
+import hashlib
+import requests
+import io
+import time
 from openai import OpenAI
 
-# --- ページ設定 (サイドバーなし・ワイド) ---
+# --- ページ設定 ---
 st.set_page_config(layout="wide", page_title="AI Book Reader", initial_sidebar_state="collapsed")
 
 # --- 設定: Google連携 ---
-scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+# スプレッドシートとドライブ両方の権限を確保
+scope = [
+    "https://spreadsheets.google.com/feeds",
+    "https://www.googleapis.com/auth/drive"
+]
 
-def get_gspread_client():
+def get_clients():
     try:
+        # StreamlitのSecretsから認証情報を取得
         creds_dict = dict(st.secrets["gcp_service_account"])
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-        client = gspread.authorize(creds)
-        return client
-    except:
-        return None
+        
+        # 1. GSpread (シート用クライアント)
+        gc_client = gspread.authorize(creds)
+        
+        # 2. Drive API (画像アップロード用クライアント)
+        # oauth2clientのcredsを使ってDrive APIを構築
+        service = build('drive', 'v3', credentials=creds)
+        
+        return gc_client, service
+    except Exception as e:
+        st.error(f"Google Auth Error: {e}")
+        return None, None
 
-# --- 設定: OpenAI (画像プロンプト職人化) ---
+# --- 設定: OpenAI (記憶定着プロンプト) ---
 def analyze_chunk_with_gpt(target_word, context_text):
     client = OpenAI(api_key=st.secrets["openai"]["api_key"])
     
-    # ★修正: 画像プロンプト(image_prompt)の指示を具体的に強化★
     prompt = f"""
     The user is reading: "{context_text}"
     Target word: "{target_word}"
@@ -40,51 +56,84 @@ def analyze_chunk_with_gpt(target_word, context_text):
     2. IPA pronunciation.
     3. Japanese meaning (Concise).
     4. Extract the ONE specific sentence containing the target word.
-    5. Create a CREATIVE image prompt to memorize this word.
-       - Do NOT use text or letters in the image.
-       - Use visual metaphors.
-       - Example: For "summarize", describe "a funnel squeezing many colorful balls into one drop".
-       - Style: "Studio Ghibli anime style, vibrant colors".
+    5. Create a "Mnemonic Image Prompt" (English) for FLUX AI.
+       - Concept: Surrealism, Visual Pun, or Exaggerated Action.
+       - Make it memorable and weird.
+       - Example for 'Procrastinate': "A sloth sleeping on a pile of alarm clocks, digital art".
+       - NO TEXT, NO LETTERS.
 
-    Output JSON:
-    1. "chunk": English phrase.
-    2. "pronunciation": IPA.
-    3. "meaning": Japanese meaning.
-    4. "pos": Part of Speech.
-    5. "original_sentence": The single sentence.
-    6. "image_prompt": The visual description (English).
+    Output JSON keys: "chunk", "pronunciation", "meaning", "pos", "original_sentence", "image_prompt"
     """
     try:
         response = client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "You are a helpful assistant that outputs JSON."},
-                {"role": "user", "content": prompt},
-            ],
+            messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"}
         )
         return json.loads(response.choices[0].message.content)
-    except Exception:
-        return {"chunk": target_word, "pronunciation": "", "meaning": "Error", "pos": "-", "original_sentence": "", "image_prompt": "illustration of a book"}
+    except:
+        return {"chunk": target_word, "pronunciation": "", "meaning": "Error", "pos": "-", "original_sentence": "", "image_prompt": ""}
 
-# --- 設定: 無料画像生成 (Pollinations.ai) ---
-def get_free_image_url(image_prompt):
-    # プロンプトにスタイルを強制付与 & 乱数(seed)で毎回違う絵にする
-    seed = random.randint(0, 10000)
-    # text, word などの単語が入ると文字が書かれやすいので除外するおまじない
-    refined_prompt = f"{image_prompt}, masterpiece, best quality, no text, no letters, no words"
-    safe_prompt = urllib.parse.quote(refined_prompt)
+# --- 画像生成 & Drive保存 (ここが心臓部) ---
+def generate_and_upload_image(image_prompt, word_key, drive_service):
+    # 1. Pollinations (Fluxモデル) で画像生成
+    # seed固定でキャッシュを効かせる
+    hash_object = hashlib.md5(word_key.encode())
+    seed = int(hash_object.hexdigest(), 16) % 100000
     
-    return f"https://image.pollinations.ai/prompt/{safe_prompt}?width=300&height=300&nologo=true&seed={seed}"
+    # model=flux を指定して高画質化
+    refined_prompt = f"{image_prompt}, detailed, 8k, best quality, no text"
+    safe_prompt = urllib.parse.quote(refined_prompt)
+    image_url = f"https://image.pollinations.ai/prompt/{safe_prompt}?width=512&height=512&model=flux&nologo=true&seed={seed}"
+    
+    try:
+        # 2. 画像をダウンロード (メモリ上に保持)
+        # Pollinationsへのリクエスト (少し待つ場合があるためtimeout長め)
+        response = requests.get(image_url, timeout=20)
+        
+        if response.status_code == 200:
+            image_data = io.BytesIO(response.content)
+            
+            # 3. Google Driveにアップロード
+            # ファイル名を「単語_seed.jpg」にして重複防止
+            file_metadata = {
+                'name': f"{word_key}_{seed}.jpg",
+                'mimeType': 'image/jpeg'
+            }
+            media = MediaIoBaseUpload(image_data, mimetype='image/jpeg')
+            
+            # Drive APIでファイル作成
+            file = drive_service.files().create(
+                body=file_metadata,
+                media_body=media,
+                fields='id, webContentLink'
+            ).execute()
+            
+            # 4. 誰でも見れるように権限変更 (Ankiがアクセスできるように重要)
+            drive_service.permissions().create(
+                fileId=file.get('id'),
+                body={'type': 'anyone', 'role': 'reader'},
+                fields='id'
+            ).execute()
+            
+            # ダウンロード用URLを返す
+            return file.get('webContentLink')
+            
+    except Exception as e:
+        st.warning(f"Image Upload Failed: {e}. Using direct link instead.")
+        # エラー時はPollinationsのURLをそのまま返す(保険)
+        return image_url
+    
+    return image_url
 
-# --- テキスト解析 ---
+# --- テキスト構造解析 ---
 def parse_pdf_to_structured_blocks(text):
     if not text: return []
     lines = text.splitlines()
     blocks = []
     current_text = ""
     current_type = "p"
-    sentence_endings = ('.', ',', '!', '?', ':', ';', '"', "'", '”', '’', ')', ']')
+    # sentence_endings = ('.', ',', '!', '?', ':', ';', '"', "'", '”', '’', ')', ']') 
     for line in lines:
         line = line.strip()
         if not line: continue
@@ -127,7 +176,6 @@ def group_blocks_into_screens(blocks, words_per_screen=500):
         screens.append(current_screen)
     return screens
 
-# --- 補助関数: 文脈から強制的に一文を切り出す ---
 def extract_sentence_python(text, word):
     sentences = re.split(r'(?<=[.!?])\s+', text)
     for s in sentences:
@@ -140,17 +188,16 @@ if "last_clicked" not in st.session_state:
     st.session_state.last_clicked = ""
 if "slots" not in st.session_state:
     st.session_state.slots = [None] * 7
-else:
-    if len(st.session_state.slots) != 7:
-        st.session_state.slots = [None] * 7
 if "reader_mode" not in st.session_state:
     st.session_state.reader_mode = False
 if "all_screens" not in st.session_state:
     st.session_state.all_screens = []
 if "current_screen_index" not in st.session_state:
     st.session_state.current_screen_index = 0
+if "enable_image_gen" not in st.session_state:
+    st.session_state.enable_image_gen = False
 
-# --- CSS: 全画面化 ---
+# --- CSS ---
 st.markdown("""
 <style>
     .block-container {
@@ -162,12 +209,9 @@ st.markdown("""
     }
     header, footer, #MainMenu {display: none !important;}
     .stButton button {
-        height: 1.8em;
-        line-height: 1;
-        padding: 0 5px;
-        min-height: 0px;
-        border: 1px solid #ccc;
+        height: 1.8em; line-height: 1; padding: 0 5px; min-height: 0px; border: 1px solid #ccc;
     }
+    .stCheckbox { padding-top: 5px; }
     .stApp { background-color: #ffffff; }
 </style>
 """, unsafe_allow_html=True)
@@ -196,7 +240,7 @@ else:
     nav_left, nav_right = st.columns([4.5, 1])
     
     with nav_left:
-        c1, c2, c3, c4 = st.columns([0.5, 0.5, 6, 0.5])
+        c1, c2, c3, c4, c5 = st.columns([0.5, 0.5, 4, 1.5, 0.5])
         with c1:
             if st.button("◀", key="prev"):
                 if st.session_state.current_screen_index > 0:
@@ -212,6 +256,9 @@ else:
             total = len(st.session_state.all_screens)
             st.markdown(f"<span style='color:#999; font-size:0.8em; margin-left:10px;'>Page {curr}/{total}</span>", unsafe_allow_html=True)
         with c4:
+            # 画像生成スイッチ (デフォルトOFF)
+            st.session_state.enable_image_gen = st.checkbox("🖼️ Image Gen", value=st.session_state.enable_image_gen)
+        with c5:
              if st.button("✕", key="close"):
                 st.session_state.reader_mode = False
                 st.session_state.slots = [None] * 7
@@ -223,38 +270,24 @@ else:
     with col_read:
         if st.session_state.all_screens:
             current_blocks = st.session_state.all_screens[st.session_state.current_screen_index]
-            
             html_content = """
             <style>
                 .book-container {
-                    background-color: #fff;
-                    border: 1px solid #ddd;
-                    border-radius: 4px;
-                    padding: 30px 40px;
-                    font-family: 'Georgia', serif;
-                    font-size: 19px;     
-                    line-height: 1.7;    
-                    color: #2c3e50;
-                    height: 92vh;
-                    overflow-y: auto;
+                    background-color: #fff; border: 1px solid #ddd; border-radius: 4px;
+                    padding: 30px 40px; font-family: 'Georgia', serif; font-size: 19px; line-height: 1.7; color: #2c3e50;
+                    height: 92vh; overflow-y: auto;
                 }
                 .header-text { font-weight: bold; font-size: 1.4em; margin: 10px 0 15px 0; border-bottom: 2px solid #f0f0f0; }
                 .list-item { margin-left: 20px; margin-bottom: 5px; border-left: 3px solid #eee; padding-left: 10px; }
                 .p-text { margin-bottom: 20px; text-align: justify; }
                 .w { text-decoration: none; color: #2c3e50; cursor: pointer; border-bottom: 1px dotted #ccc; }
                 .w:hover { color: #d35400; border-bottom: 2px solid #d35400; background-color: #fff3e0; }
-                
                 @media only screen and (max-width: 768px) {
-                    .book-container {
-                        height: 92vh !important;
-                        padding: 15px !important;
-                        font-size: 16px !important;
-                    }
+                    .book-container { height: 92vh !important; padding: 15px !important; font-size: 16px !important; }
                 }
             </style>
             <div class='book-container'>
             """
-            
             word_counter = 0
             for block in current_blocks:
                 b_type = block["type"]
@@ -266,64 +299,36 @@ else:
                     html_content += "<div class='list-item'>"
                 else:
                     html_content += "<div class='p-text'>"
-                
-                words = text.split()
-                for w in words:
+                for w in text.split():
                     clean_w = w.strip(".,!?\"'()[]{}:;")
                     if not clean_w:
                         html_content += w + " "
                         continue
                     unique_id = f"wd{word_counter}_{clean_w}"
-                    safe_w = html.escape(w)
-                    html_content += f"<a href='#' id='{unique_id}' class='w'>{safe_w}</a> "
+                    html_content += f"<a href='#' id='{unique_id}' class='w'>{html.escape(w)}</a> "
                     word_counter += 1
                 html_content += "</div>"
             html_content += "</div>"
-            
             clicked = click_detector(html_content, key=f"det_{st.session_state.current_screen_index}")
 
-    # --- 右: 辞書リスト (画像付き) ---
+    # --- 右: 辞書リスト (画像は非表示・テキストのみ) ---
     with col_dict:
         for i in range(7):
             slot_data = st.session_state.slots[i] if i < len(st.session_state.slots) else None
-            
             if slot_data is None:
-                st.markdown(f"""
-                <div style="
-                    height: 12.8vh;
-                    margin-bottom: 0.5vh;
-                    border: 1px dashed #f0f0f0;
-                    border-radius: 4px;
-                "></div>
-                """, unsafe_allow_html=True)
+                st.markdown(f"<div style='height: 12.8vh; margin-bottom: 0.5vh; border: 1px dashed #f0f0f0; border-radius: 4px;'></div>", unsafe_allow_html=True)
             else:
                 chunk = slot_data['chunk']
                 info = slot_data['info']
-                pron = info.get('pronunciation', '')
-                image_url = slot_data.get('image_url', '')
-                
+                # アプリ上では画像を表示せず、サクサク感を維持
                 st.markdown(f"""
-                <div style="
-                    height: 12.8vh;
-                    border-left: 4px solid #2980b9;
-                    background-color: #f8fbff;
-                    padding: 5px;
-                    margin-bottom: 0.5vh;
-                    border-radius: 4px;
-                    overflow: hidden;
-                    display: flex;
-                    justify-content: space-between;
-                ">
-                    <div style="width: 65%;">
-                        <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:2px;">
-                            <span style="font-weight:bold; color:#1a5276; font-size:0.9em; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; max-width:90%;">{chunk}</span>
-                        </div>
-                        <div style="font-size:0.7em; color:#777; margin-bottom:2px;">{pron}</div>
-                        <div style="font-weight:bold; font-size:0.8em; color:#333; line-height:1.2; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow:hidden;">{info.get('meaning')}</div>
+                <div style="height: 12.8vh; border-left: 4px solid #2980b9; background-color: #f8fbff; padding: 8px; margin-bottom: 0.5vh; border-radius: 4px; overflow: hidden; display: flex; flex-direction: column; justify-content: center;">
+                    <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:4px;">
+                        <span style="font-weight:bold; color:#1a5276; font-size:1.1em; overflow:hidden; white-space:nowrap; text-overflow:ellipsis;">{chunk}</span>
+                        <span style="font-size:0.7em; color:#1a5276; background:#e1eff7; padding:1px 4px; border-radius:3px;">{info.get('pos')}</span>
                     </div>
-                    <div style="width: 32%; display: flex; align-items: center; justify-content: center; background:#fff; border-radius:4px;">
-                        <img src="{image_url}" style="width: 100%; height: 100%; object-fit: cover; border-radius: 4px;">
-                    </div>
+                    <div style="font-size:0.8em; color:#777; margin-bottom:4px;">{info.get('pronunciation', '')}</div>
+                    <div style="font-weight:bold; font-size:0.9em; color:#333; line-height:1.3; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow:hidden;">{info.get('meaning')}</div>
                 </div>
                 """, unsafe_allow_html=True)
 
@@ -336,28 +341,40 @@ else:
             current_blocks = st.session_state.all_screens[st.session_state.current_screen_index]
             context_text = " ".join([b["text"] for b in current_blocks])
             
-            result = analyze_chunk_with_gpt(target_word, context_text)
-            
-            # 抽出文の安全策
-            original_sentence = result.get('original_sentence', '')
-            if not original_sentence or len(original_sentence) > 150:
-                original_sentence = extract_sentence_python(context_text, target_word)
-            
-            # 画像生成
-            image_prompt = result.get('image_prompt', target_word)
-            image_url = get_free_image_url(image_prompt)
-            result['image_url'] = image_url
-            
-            curr = st.session_state.slots
-            curr.pop()
-            curr.insert(0, {"chunk": result["chunk"], "info": result, "image_url": image_url})
-            st.session_state.slots = curr[:7] + [None] * (7 - len(curr))
-            
-            client = get_gspread_client()
-            if client:
-                try:
-                    sheet = client.open(st.secrets["sheet_config"]["sheet_name"]).sheet1
-                    meaning_full = f"{result['meaning']} ({result['pos']})"
-                    sheet.append_row([result['chunk'], result.get('pronunciation', ''), meaning_full, original_sentence, image_url])
-                except: pass
+            with st.spinner("Analyzing..."):
+                # 1. AI分析
+                result = analyze_chunk_with_gpt(target_word, context_text)
+                
+                # 2. 一文抽出の保険
+                original_sentence = result.get('original_sentence', '')
+                if not original_sentence or len(original_sentence) > 150:
+                    original_sentence = extract_sentence_python(context_text, target_word)
+                
+                # 3. 画像生成 & Driveアップロード (スイッチON時のみ)
+                final_image_url = ""
+                if st.session_state.enable_image_gen:
+                    with st.spinner("🎨 Creating Image & Uploading to Drive..."):
+                        image_prompt = result.get('image_prompt', target_word)
+                        gc_client, drive_service = get_clients()
+                        if drive_service:
+                            final_image_url = generate_and_upload_image(image_prompt, target_word, drive_service)
+                        else:
+                            # Drive接続失敗時
+                            final_image_url = "" 
+                
+                # 4. シート保存
+                client, _ = get_clients()
+                if client:
+                    try:
+                        sheet = client.open(st.secrets["sheet_config"]["sheet_name"]).sheet1
+                        meaning_full = f"{result['meaning']} ({result['pos']})"
+                        sheet.append_row([result['chunk'], result.get('pronunciation', ''), meaning_full, original_sentence, final_image_url])
+                    except: pass
+                
+                # 5. UI更新
+                curr = st.session_state.slots
+                curr.pop()
+                curr.insert(0, {"chunk": result["chunk"], "info": result})
+                st.session_state.slots = curr[:7] + [None] * (7 - len(curr))
+                
             st.rerun()
