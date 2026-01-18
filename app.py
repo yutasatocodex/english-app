@@ -9,33 +9,8 @@ import re
 import json
 from openai import OpenAI
 
-# --- ページ設定 (余白を削る) ---
+# --- ページ設定 (サイドバーを隠し、ワイドモード) ---
 st.set_page_config(layout="wide", page_title="AI Book Reader", initial_sidebar_state="collapsed")
-
-# --- CSS: 全体の余白を極限まで削り、1画面に収める ---
-st.markdown("""
-<style>
-    /* ページ全体の余白削除 */
-    .block-container {
-        padding-top: 1rem !important;
-        padding-bottom: 0rem !important;
-        padding-left: 1rem !important;
-        padding-right: 1rem !important;
-        max-width: 100% !important;
-    }
-    /* ヘッダー隠し */
-    header {visibility: hidden;}
-    /* フッター隠し */
-    footer {visibility: hidden;}
-    
-    /* ボタンのスタイル */
-    .stButton button {
-        height: 2em;
-        padding: 0.2em 0.5em;
-        font-size: 0.9em;
-    }
-</style>
-""", unsafe_allow_html=True)
 
 # --- 設定: Google連携 ---
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -117,7 +92,8 @@ def parse_pdf_to_structured_blocks(text):
         blocks.append({"type": current_type, "text": current_text})
     return blocks
 
-def group_blocks_into_screens(blocks, words_per_screen=380):
+def group_blocks_into_screens(blocks, words_per_screen=450):
+    # 1画面の文字数を増やして、広い画面を埋める
     screens = []
     current_screen = []
     current_word_count = 0
@@ -136,11 +112,9 @@ def group_blocks_into_screens(blocks, words_per_screen=380):
 # --- セッション初期化 ---
 if "last_clicked" not in st.session_state:
     st.session_state.last_clicked = ""
-# スロットを7個に制限
 if "slots" not in st.session_state:
-    st.session_state.slots = [None] * 7
+    st.session_state.slots = [None] * 7 # 7個限定
 else:
-    # 数が変わった場合の調整 (10 -> 7)
     if len(st.session_state.slots) != 7:
         st.session_state.slots = [None] * 7
 
@@ -151,12 +125,38 @@ if "all_screens" not in st.session_state:
 if "current_screen_index" not in st.session_state:
     st.session_state.current_screen_index = 0
 
+# --- CSS: 全画面活用設定 (重要) ---
+st.markdown("""
+<style>
+    /* 1. 全体の余白を削除 */
+    .block-container {
+        padding-top: 0.5rem !important;
+        padding-bottom: 0rem !important;
+        padding-left: 1rem !important;
+        padding-right: 1rem !important;
+        max-width: 100% !important;
+    }
+    /* 2. ヘッダー・フッター削除 */
+    header {display: none !important;}
+    footer {display: none !important;}
+    #MainMenu {display: none !important;}
+    
+    /* 3. ボタンのデザイン */
+    .stButton button {
+        height: 2.2em;
+        line-height: 1;
+        padding: 0 10px;
+    }
+</style>
+""", unsafe_allow_html=True)
+
 # ==========================================
-# 1. 初期画面 (アップロードのみ)
+# 1. 初期画面 (ファイル選択)
 # ==========================================
 if not st.session_state.reader_mode:
-    st.title("📚 AI Book Reader")
-    uploaded_file = st.file_uploader("Select PDF to Start Reading", type="pdf")
+    st.markdown("## 📚 AI Book Reader")
+    st.markdown("Select a PDF file to enter Reading Mode.")
+    uploaded_file = st.file_uploader("Upload PDF", type="pdf", label_visibility="collapsed")
     
     if uploaded_file is not None:
         reader = PdfReader(uploaded_file)
@@ -165,69 +165,76 @@ if not st.session_state.reader_mode:
             full_text += page.extract_text() + "\n"
         
         structured_blocks = parse_pdf_to_structured_blocks(full_text)
-        # 1画面の分量を調整
-        st.session_state.all_screens = group_blocks_into_screens(structured_blocks, words_per_screen=380)
+        # 画面サイズに合わせて単語数を450に設定
+        st.session_state.all_screens = group_blocks_into_screens(structured_blocks, words_per_screen=450)
         st.session_state.current_screen_index = 0
-        st.session_state.reader_mode = True # 読書モードへ移行
+        st.session_state.reader_mode = True
         st.rerun()
 
 # ==========================================
-# 2. 読書画面 (アップロード要素なし)
+# 2. 読書モード (全画面固定レイアウト)
 # ==========================================
 else:
-    # レイアウト: 左(読書) : 右(リスト) = 3 : 1
-    col_main, col_side = st.columns([3, 1])
-
-    with col_main:
-        # --- 最小限のナビゲーションバー ---
-        nav_c1, nav_c2, nav_c3, nav_c4 = st.columns([1, 10, 1, 1])
-        with nav_c1:
-            if st.button("◀", key="prev"):
-                if st.session_state.current_screen_index > 0:
-                    st.session_state.current_screen_index -= 1
-                    st.rerun()
-        with nav_c2:
-            # 現在位置の表示 (例: 1 / 25)
-            curr = st.session_state.current_screen_index + 1
-            total = len(st.session_state.all_screens)
-            st.markdown(f"<div style='text-align:center; font-size:0.9em; color:#888; padding-top:5px;'>Page {curr} / {total}</div>", unsafe_allow_html=True)
-        with nav_c3:
-            if st.button("▶", key="next"):
-                if st.session_state.current_screen_index < len(st.session_state.all_screens) - 1:
-                    st.session_state.current_screen_index += 1
-                    st.rerun()
-        with nav_c4:
-            # 最初の画面に戻るボタン（小さく）
-            if st.button("✕", help="Exit Reader"):
-                st.session_state.reader_mode = False
-                st.session_state.slots = [None] * 7
+    # ナビゲーション行 (最小限)
+    nav_c1, nav_c2, nav_c3, nav_c4 = st.columns([0.5, 8, 0.5, 0.5])
+    with nav_c1:
+        if st.button("◀", key="prev"):
+            if st.session_state.current_screen_index > 0:
+                st.session_state.current_screen_index -= 1
                 st.rerun()
+    with nav_c2:
+        curr = st.session_state.current_screen_index + 1
+        total = len(st.session_state.all_screens)
+        # プログレスバー風の表示
+        st.markdown(f"<div style='text-align:center; color:#888; font-size:0.8em; padding-top:5px;'>Page {curr} / {total}</div>", unsafe_allow_html=True)
+    with nav_c3:
+        if st.button("▶", key="next"):
+            if st.session_state.current_screen_index < len(st.session_state.all_screens) - 1:
+                st.session_state.current_screen_index += 1
+                st.rerun()
+    with nav_c4:
+        if st.button("✕"):
+            st.session_state.reader_mode = False
+            st.session_state.slots = [None] * 7
+            st.rerun()
 
-        # --- 読書エリア ---
+    # メインコンテンツ (左右分割)
+    col_read, col_dict = st.columns([3, 1])
+
+    # --- 左: 読書エリア (高さ85vh強制) ---
+    with col_read:
         if st.session_state.all_screens:
             current_blocks = st.session_state.all_screens[st.session_state.current_screen_index]
             
-            # 高さ固定(82vh): 画面の約8割
             html_content = """
             <style>
                 .book-container {
                     background-color: #fff;
-                    border: 1px solid #eee;
+                    border: 1px solid #ddd;
                     border-radius: 8px;
-                    padding: 30px;
+                    padding: 40px;
                     font-family: 'Georgia', serif;
                     font-size: 19px;     
                     line-height: 1.7;    
                     color: #2c3e50;
-                    height: 82vh; /* 画面高さに合わせて固定 */
-                    overflow-y: auto; /* 文章が長い場合のみ内部スクロール */
+                    height: 85vh; /* ★ここが重要：画面の85%の高さを確保★ */
+                    overflow-y: auto;
                 }
-                .header-text { font-weight: bold; font-size: 1.3em; margin: 15px 0 10px 0; color:#000; }
-                .list-item { margin-left: 15px; margin-bottom: 5px; border-left: 3px solid #eee; padding-left: 10px; }
-                .p-text { margin-bottom: 15px; text-align: justify; }
+                .header-text { font-weight: bold; font-size: 1.4em; margin: 10px 0 15px 0; border-bottom: 2px solid #f0f0f0; }
+                .list-item { margin-left: 20px; margin-bottom: 5px; border-left: 3px solid #eee; padding-left: 10px; }
+                .p-text { margin-bottom: 20px; text-align: justify; }
                 
                 .w { text-decoration: none; color: #2c3e50; cursor: pointer; border-bottom: 1px dotted #ccc; }
                 .w:hover { color: #d35400; border-bottom: 2px solid #d35400; background-color: #fff3e0; }
+                
+                /* スマホ対応 */
+                @media only screen and (max-width: 768px) {
+                    .book-container {
+                        height: 85vh !important;
+                        padding: 15px !important;
+                        font-size: 16px !important;
+                    }
+                }
             </style>
             <div class='book-container'>
             """
@@ -259,27 +266,22 @@ else:
             
             clicked = click_detector(html_content, key=f"det_{st.session_state.current_screen_index}")
 
-    with col_side:
-        # --- 単語リストエリア (7個) ---
-        # 読書エリアと同じ高さ(82vh)に収まるように計算
-        # タイトルとクリアボタン
-        st.markdown("<div style='height:35px; display:flex; align-items:center;'><b>Dictionary</b></div>", unsafe_allow_html=True)
+    # --- 右: 辞書リスト (7個固定・高さ合わせ) ---
+    with col_dict:
+        # 85vhの中に7個を均等に配置する計算 (約11.5vh/個)
         
-        # 7個のスロットを表示
         for i in range(7):
             slot_data = st.session_state.slots[i] if i < len(st.session_state.slots) else None
             
-            # 1つあたりの高さ: 10vh程度
             if slot_data is None:
+                # 空スロット（透明にして場所だけ確保 = レイアウト崩れ防止）
                 st.markdown(f"""
                 <div style="
-                    height: 10.5vh;
-                    border: 1px dashed #ddd;
+                    height: 11.5vh;
+                    margin-bottom: 0.7vh;
+                    border: 1px dashed #f0f0f0; /* 薄い線 */
                     border-radius: 6px;
-                    margin-bottom: 0.8vh;
-                    display: flex; align-items: center; justify-content: center;
-                    color: #eee; font-size: 0.8em;
-                ">Slot {i+1}</div>
+                "></div>
                 """, unsafe_allow_html=True)
             else:
                 chunk = slot_data['chunk']
@@ -288,20 +290,21 @@ else:
                 
                 st.markdown(f"""
                 <div style="
-                    height: 10.5vh;
-                    border-left: 4px solid #2980b9;
+                    height: 11.5vh;
+                    border-left: 5px solid #2980b9;
                     background-color: #f8fbff;
-                    padding: 6px 8px;
-                    margin-bottom: 0.8vh;
+                    padding: 8px;
+                    margin-bottom: 0.7vh; /* 隙間 */
                     border-radius: 6px;
                     overflow: hidden;
+                    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
                 ">
-                    <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:2px;">
-                        <span style="font-weight:bold; color:#1a5276; font-size:0.95em; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; max-width:85%;">{chunk}</span>
-                        <span style="font-size:0.6em; color:#1a5276; background:#e1eff7; padding:1px 3px; border-radius:3px;">{info.get('pos')}</span>
+                    <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:3px;">
+                        <span style="font-weight:bold; color:#1a5276; font-size:1.0em; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; max-width:85%;">{chunk}</span>
+                        <span style="font-size:0.65em; color:#1a5276; background:#e1eff7; padding:1px 3px; border-radius:3px;">{info.get('pos')}</span>
                     </div>
-                    <div style="font-size:0.75em; color:#777; margin-bottom:2px;">{pron}</div>
-                    <div style="font-weight:bold; font-size:0.85em; color:#333; line-height:1.2; overflow:hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;">{info.get('meaning')}</div>
+                    <div style="font-size:0.75em; color:#777; margin-bottom:3px;">{pron}</div>
+                    <div style="font-weight:bold; font-size:0.85em; color:#333; line-height:1.25; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow:hidden;">{info.get('meaning')}</div>
                 </div>
                 """, unsafe_allow_html=True)
 
@@ -317,9 +320,9 @@ else:
             result = analyze_chunk_with_gpt(target_word, context_sentence)
             
             curr = st.session_state.slots
-            curr.pop() # 末尾(一番古いもの)を削除
+            curr.pop() # 古いものを削除
             curr.insert(0, {"chunk": result["chunk"], "info": result})
-            st.session_state.slots = curr[:7] + [None] * (7 - len(curr)) # 7個に維持
+            st.session_state.slots = curr[:7] + [None] * (7 - len(curr))
             
             client = get_gspread_client()
             if client:
