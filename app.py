@@ -25,28 +25,26 @@ def get_gspread_client():
     except:
         return None
 
-# --- 設定: OpenAI (チャンク＆発音＆日本語ニュアンス) ---
+# --- 設定: OpenAI (チャンク＆発音抽出 / 詳細説明は削除) ---
 def analyze_chunk_with_gpt(target_word, context_sentence):
     client = OpenAI(api_key=st.secrets["openai"]["api_key"])
     
-    # ★ここを修正: 詳細(details)を「日本語で簡潔に」と指定★
+    # ★修正: 余計なdetails（解説）を求めないように指示をシンプル化★
     prompt = f"""
-    You are an expert English teacher for Japanese students.
+    You are an expert English teacher.
     The user is reading this text: "{context_sentence}"
     The user clicked the word: "{target_word}"
 
     Your task:
     1. Identify the meaningful "chunk" or collocation in this context.
-    2. Provide the IPA pronunciation for that chunk.
-    3. Provide the Japanese meaning.
-    4. Provide brief synonyms or nuance in JAPANESE.
+    2. Provide the IPA pronunciation.
+    3. Provide the Japanese meaning (Short & Clear).
 
     Output MUST be a JSON object with these keys:
-    1. "chunk": The identified phrase (English).
-    2. "pronunciation": IPA symbols (e.g. /həˈləʊ/).
-    3. "meaning": Japanese meaning (Concise).
+    1. "chunk": The identified phrase.
+    2. "pronunciation": IPA symbols.
+    3. "meaning": Japanese meaning.
     4. "pos": Part of Speech.
-    5. "details": Synonyms, nuance, or usage note in JAPANESE (Max 30 chars).
     """
     
     try:
@@ -60,7 +58,7 @@ def analyze_chunk_with_gpt(target_word, context_sentence):
         )
         return json.loads(response.choices[0].message.content)
     except Exception:
-        return {"chunk": target_word, "pronunciation": "", "meaning": "Error", "pos": "-", "details": "Try again."}
+        return {"chunk": target_word, "pronunciation": "", "meaning": "Error", "pos": "-"}
 
 # --- テキスト整形 ---
 def format_text_advanced(text):
@@ -223,7 +221,7 @@ if uploaded_file is not None:
             if slot_data is None:
                 st.markdown(f"""
                 <div style="
-                    height: 150px;
+                    height: 140px;
                     border: 2px dashed #e0e0e0;
                     border-radius: 6px;
                     margin-bottom: 10px;
@@ -239,15 +237,25 @@ if uploaded_file is not None:
                 info = slot_data['info']
                 pron = info.get('pronunciation', '')
                 
+                # ★修正: 補足説明(details)を削除し、レイアウトをスッキリさせた★
+                # 高さは140px確保し、文字サイズを少し抑えて長文も入りやすく調整
                 st.markdown(f"""
-                <div style="height: 150px; border-left: 5px solid #2980b9; background-color: #f0f8ff; padding: 10px; margin-bottom: 10px; border-radius: 6px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); overflow-y: auto;">
-                    <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:4px;">
-                        <span style="font-weight:bold; color:#1a5276; font-size:1.0em;">{chunk}</span>
-                        <span style="background:#d4e6f1; color:#1a5276; padding:1px 4px; border-radius:3px; font-size:0.7em;">{info.get('pos')}</span>
+                <div style="
+                    height: 140px; 
+                    border-left: 5px solid #2980b9; 
+                    background-color: #f0f8ff; 
+                    padding: 10px; 
+                    margin-bottom: 10px; 
+                    border-radius: 6px; 
+                    box-shadow: 0 2px 4px rgba(0,0,0,0.05); 
+                    overflow-y: auto;
+                ">
+                    <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:5px;">
+                        <span style="font-weight:bold; color:#1a5276; font-size:1.1em;">{chunk}</span>
+                        <span style="background:#d4e6f1; color:#1a5276; padding:2px 5px; border-radius:3px; font-size:0.7em;">{info.get('pos')}</span>
                     </div>
-                    <div style="font-family:'Lucida Sans Unicode', sans-serif; color:#555; font-size:0.8em; margin-bottom:4px;">{pron}</div>
-                    <div style="font-weight:bold; font-size:0.85em; color:#333; line-height:1.4; margin-bottom:4px;">{info.get('meaning')}</div>
-                    <div style="font-size:0.75em; color:#666; line-height:1.3;">{info.get('details')}</div>
+                    <div style="font-family:'Lucida Sans Unicode', sans-serif; color:#555; font-size:0.85em; margin-bottom:6px;">{pron}</div>
+                    <div style="font-weight:bold; font-size:0.95em; color:#333; line-height:1.4;">{info.get('meaning')}</div>
                 </div>
                 """, unsafe_allow_html=True)
 
@@ -294,7 +302,8 @@ if uploaded_file is not None:
             if client:
                 try:
                     sheet = client.open(st.secrets["sheet_config"]["sheet_name"]).sheet1
-                    meaning_full = f"{result['meaning']} ({result['pos']}) - {result['details']}"
+                    # シートへの保存内容もシンプルに (詳細説明はカット)
+                    meaning_full = f"{result['meaning']} ({result['pos']})"
                     sheet.append_row([
                         result['chunk'], 
                         result.get('pronunciation', ''), 
