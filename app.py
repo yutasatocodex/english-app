@@ -1,7 +1,7 @@
 import streamlit as st
 from pypdf import PdfReader
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+from google.oauth2.service_account import Credentials # ★ここが変わりました
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 from st_click_detector import click_detector
@@ -19,22 +19,23 @@ from openai import OpenAI
 st.set_page_config(layout="wide", page_title="AI Book Reader", initial_sidebar_state="collapsed")
 
 # --- 設定: Google連携 ---
-# スプレッドシートとドライブ両方の権限を確保
 scope = [
-    "https://spreadsheets.google.com/feeds",
+    "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
 ]
 
 def get_clients():
     try:
-        # StreamlitのSecretsから認証情報を取得
+        # StreamlitのSecretsから情報を取得
         creds_dict = dict(st.secrets["gcp_service_account"])
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         
-        # 1. GSpread (シート用クライアント)
+        # ★修正: 最新の認証方式 (google-auth) を使用★
+        creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
+        
+        # 1. GSpread (シート用)
         gc_client = gspread.authorize(creds)
         
-        # 2. Drive API (画像アップロード用クライアント)
+        # 2. Drive API (画像用)
         service = build('drive', 'v3', credentials=creds)
         
         return gc_client, service
@@ -42,7 +43,7 @@ def get_clients():
         st.error(f"Google Auth Error: {e}")
         return None, None
 
-# --- 設定: OpenAI (記憶定着プロンプト) ---
+# --- 設定: OpenAI ---
 def analyze_chunk_with_gpt(target_word, context_text):
     client = OpenAI(api_key=st.secrets["openai"]["api_key"])
     
@@ -73,57 +74,50 @@ def analyze_chunk_with_gpt(target_word, context_text):
     except:
         return {"chunk": target_word, "pronunciation": "", "meaning": "Error", "pos": "-", "original_sentence": "", "image_prompt": ""}
 
-# --- 画像生成 & Drive保存 (ここが心臓部) ---
+# --- 画像生成 & Drive保存 ---
 def generate_and_upload_image(image_prompt, word_key, drive_service):
-    # 1. Pollinations (Fluxモデル) で画像生成
-    # seed固定でキャッシュを効かせる
     hash_object = hashlib.md5(word_key.encode())
     seed = int(hash_object.hexdigest(), 16) % 100000
     
-    # model=flux を指定して高画質化
     refined_prompt = f"{image_prompt}, detailed, 8k, best quality, no text"
     safe_prompt = urllib.parse.quote(refined_prompt)
     image_url = f"https://image.pollinations.ai/prompt/{safe_prompt}?width=512&height=512&model=flux&nologo=true&seed={seed}"
     
     try:
-        # 2. 画像をダウンロード (メモリ上に保持)
         response = requests.get(image_url, timeout=20)
         
         if response.status_code == 200:
             image_data = io.BytesIO(response.content)
             
-            # 3. Google Driveにアップロード
             file_metadata = {
                 'name': f"{word_key}_{seed}.jpg",
                 'mimeType': 'image/jpeg',
-                'parents': ['1dcbr2GIzWdJPhGDw_5VG2uS-_lYveKyo']  # ★ここにあなたのフォルダIDを設定済み★
+                'parents': ['1dcbr2GIzWdJPhGDw_5VG2uS-_lYveKyo'] # ★フォルダID
             }
             media = MediaIoBaseUpload(image_data, mimetype='image/jpeg')
             
-            # Drive APIでファイル作成
             file = drive_service.files().create(
                 body=file_metadata,
                 media_body=media,
                 fields='id, webContentLink'
             ).execute()
             
-            # 4. 誰でも見れるように権限変更 (Ankiがアクセスできるように重要)
             drive_service.permissions().create(
                 fileId=file.get('id'),
                 body={'type': 'anyone', 'role': 'reader'},
                 fields='id'
             ).execute()
             
-            # ダウンロード用URLを返す
             return file.get('webContentLink')
             
     except Exception as e:
-        st.warning(f"Image Upload Failed: {e}. Using direct link instead.")
+        # 画面にエラー内容を表示してデバッグしやすくする
+        st.warning(f"Upload Failed: {e}") 
         return image_url
     
     return image_url
 
-# --- テキスト構造解析 ---
+# --- テキスト解析 ---
 def parse_pdf_to_structured_blocks(text):
     if not text: return []
     lines = text.splitlines()
@@ -252,7 +246,6 @@ else:
             total = len(st.session_state.all_screens)
             st.markdown(f"<span style='color:#999; font-size:0.8em; margin-left:10px;'>Page {curr}/{total}</span>", unsafe_allow_html=True)
         with c4:
-            # 画像生成スイッチ (デフォルトOFF)
             st.session_state.enable_image_gen = st.checkbox("🖼️ Image Gen", value=st.session_state.enable_image_gen)
         with c5:
              if st.button("✕", key="close"):
@@ -307,7 +300,7 @@ else:
             html_content += "</div>"
             clicked = click_detector(html_content, key=f"det_{st.session_state.current_screen_index}")
 
-    # --- 右: 辞書リスト (画像は非表示・テキストのみ) ---
+    # --- 右: 辞書リスト ---
     with col_dict:
         for i in range(7):
             slot_data = st.session_state.slots[i] if i < len(st.session_state.slots) else None
@@ -337,15 +330,12 @@ else:
             context_text = " ".join([b["text"] for b in current_blocks])
             
             with st.spinner("Analyzing..."):
-                # 1. AI分析
                 result = analyze_chunk_with_gpt(target_word, context_text)
                 
-                # 2. 一文抽出の保険
                 original_sentence = result.get('original_sentence', '')
                 if not original_sentence or len(original_sentence) > 150:
                     original_sentence = extract_sentence_python(context_text, target_word)
                 
-                # 3. 画像生成 & Driveアップロード (スイッチON時のみ)
                 final_image_url = ""
                 if st.session_state.enable_image_gen:
                     with st.spinner("🎨 Creating Image & Uploading to Drive..."):
@@ -354,9 +344,8 @@ else:
                         if drive_service:
                             final_image_url = generate_and_upload_image(image_prompt, target_word, drive_service)
                         else:
-                            final_image_url = "" 
+                            final_image_url = ""
                 
-                # 4. シート保存
                 client, _ = get_clients()
                 if client:
                     try:
@@ -365,7 +354,6 @@ else:
                         sheet.append_row([result['chunk'], result.get('pronunciation', ''), meaning_full, original_sentence, final_image_url])
                     except: pass
                 
-                # 5. UI更新
                 curr = st.session_state.slots
                 curr.pop()
                 curr.insert(0, {"chunk": result["chunk"], "info": result})
