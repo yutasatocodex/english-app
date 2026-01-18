@@ -1,7 +1,8 @@
 streamlit
-pandas
 pypdf
-openai
 gspread
 oauth2client
+google-api-python-client
 st-click-detector
+openai
+requests
