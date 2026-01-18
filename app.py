@@ -29,7 +29,6 @@ def get_gspread_client():
 def analyze_chunk_with_gpt(target_word, context_sentence):
     client = OpenAI(api_key=st.secrets["openai"]["api_key"])
     
-    # ★修正: 余計なdetails（解説）を求めないように指示をシンプル化★
     prompt = f"""
     You are an expert English teacher.
     The user is reading this text: "{context_sentence}"
@@ -135,34 +134,54 @@ if uploaded_file is not None:
 
         html_content = """
         <style>
-            /* PC・iPad用 */
+            /* PC・iPad用：密度を高める設定 */
             #scrollable-container {
                 height: 1000px;
                 overflow-y: auto;
                 border: 1px solid #e0e0e0;
                 border-radius: 8px;
-                padding: 50px;
+                padding: 40px;       /* 余白を少し詰める */
                 background-color: #ffffff;
                 font-family: 'Georgia', serif;
-                font-size: 21px;
-                line-height: 2.0;
+                font-size: 17px;     /* 21px -> 17px に縮小 */
+                line-height: 1.6;    /* 2.0 -> 1.6 に詰める */
                 color: #2c3e50;
                 box-shadow: 0 4px 6px rgba(0,0,0,0.05);
             }
-            .header-text { font-weight: bold; font-size: 1.5em; margin: 40px 0 20px 0; border-bottom: 2px solid #eee; color:#000; }
-            .list-item { margin-left: 20px; margin-bottom: 10px; border-left: 4px solid #eee; padding-left: 15px; }
-            .p-text { margin-bottom: 30px; text-align: justify; }
+            .header-text { 
+                font-weight: bold; 
+                font-size: 1.4em; 
+                margin: 30px 0 15px 0; /* マージンを詰める */
+                border-bottom: 2px solid #eee; 
+                color:#000; 
+            }
+            .list-item { 
+                margin-left: 20px; 
+                margin-bottom: 8px; 
+                border-left: 3px solid #eee; 
+                padding-left: 10px; 
+            }
+            .p-text { 
+                margin-bottom: 18px; /* 30px -> 18px に詰める */
+                text-align: justify; 
+            }
             
-            /* スマホ用 */
+            /* スマホ用：さらに密度重視 */
             @media only screen and (max-width: 768px) {
                 #scrollable-container {
                     height: 1000px !important;
-                    padding: 20px !important;
-                    font-size: 18px !important;
-                    line-height: 1.8 !important;
+                    padding: 15px !important;
+                    font-size: 15px !important;  /* スマホも少し小さく */
+                    line-height: 1.5 !important; /* 行間も詰める */
                 }
-                .header-text { font-size: 1.3em !important; margin: 25px 0 15px 0 !important; }
-                .p-text { text-align: left !important; margin-bottom: 20px !important; }
+                .header-text { 
+                    font-size: 1.2em !important; 
+                    margin: 20px 0 10px 0 !important; 
+                }
+                .p-text { 
+                    text-align: left !important; 
+                    margin-bottom: 15px !important; 
+                }
             }
 
             .w { 
@@ -237,8 +256,6 @@ if uploaded_file is not None:
                 info = slot_data['info']
                 pron = info.get('pronunciation', '')
                 
-                # ★修正: 補足説明(details)を削除し、レイアウトをスッキリさせた★
-                # 高さは140px確保し、文字サイズを少し抑えて長文も入りやすく調整
                 st.markdown(f"""
                 <div style="
                     height: 140px; 
@@ -302,7 +319,6 @@ if uploaded_file is not None:
             if client:
                 try:
                     sheet = client.open(st.secrets["sheet_config"]["sheet_name"]).sheet1
-                    # シートへの保存内容もシンプルに (詳細説明はカット)
                     meaning_full = f"{result['meaning']} ({result['pos']})"
                     sheet.append_row([
                         result['chunk'], 
