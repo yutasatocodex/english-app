@@ -20,7 +20,6 @@ scope = [
 def get_gspread_client():
     try:
         creds_dict = dict(st.secrets["gcp_service_account"])
-        # 最新の認証方式 (google-auth)
         creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
         client = gspread.authorize(creds)
         return client
@@ -114,6 +113,9 @@ if "all_screens" not in st.session_state:
     st.session_state.all_screens = []
 if "current_screen_index" not in st.session_state:
     st.session_state.current_screen_index = 0
+# ★追加: PDFファイル名を保存する変数
+if "pdf_filename" not in st.session_state:
+    st.session_state.pdf_filename = ""
 
 # --- CSS: シンプル & コンパクト ---
 st.markdown("""
@@ -131,7 +133,6 @@ st.markdown("""
     }
     .stApp { background-color: #ffffff; }
     
-    /* 右側の辞書カードスタイル */
     .dict-card {
         border-left: 4px solid #2980b9;
         background-color: #f8fbff;
@@ -159,7 +160,6 @@ st.markdown("""
         padding: 1px 4px;
         border-radius: 3px;
     }
-    /* ★追加: 発音記号のスタイル */
     .dict-pron {
         font-family: 'Arial', sans-serif;
         font-size: 0.8em;
@@ -182,6 +182,9 @@ if not st.session_state.reader_mode:
     st.markdown("### 📚 AI Book Reader (Simple)")
     uploaded_file = st.file_uploader("Upload PDF", type="pdf")
     if uploaded_file is not None:
+        # ★ここでファイル名を保存
+        st.session_state.pdf_filename = uploaded_file.name
+        
         reader = PdfReader(uploaded_file)
         full_text = ""
         for page in reader.pages:
@@ -213,7 +216,9 @@ else:
         with c3:
             curr = st.session_state.current_screen_index + 1
             total = len(st.session_state.all_screens)
-            st.markdown(f"<span style='color:#999; font-size:0.8em; margin-left:10px;'>Page {curr}/{total}</span>", unsafe_allow_html=True)
+            # ファイル名を少し表示しておくと分かりやすい
+            fname = st.session_state.pdf_filename
+            st.markdown(f"<span style='color:#999; font-size:0.8em; margin-left:10px;'>Page {curr}/{total} | {fname}</span>", unsafe_allow_html=True)
         with c4:
              if st.button("✕", key="close"):
                 st.session_state.reader_mode = False
@@ -307,12 +312,13 @@ else:
                 try:
                     sheet = client.open(st.secrets["sheet_config"]["sheet_name"]).sheet1
                     meaning_full = f"{result['meaning']} ({result['pos']})"
+                    # ★ここでE列にファイル名を保存
                     sheet.append_row([
                         result['chunk'], 
                         result.get('pronunciation', ''), 
                         meaning_full, 
                         original_sentence, 
-                        ""
+                        st.session_state.pdf_filename # <--- ファイル名！
                     ])
                 except: pass
             
