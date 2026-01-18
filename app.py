@@ -35,7 +35,6 @@ def get_clients():
         gc_client = gspread.authorize(creds)
         
         # 2. Drive API (画像アップロード用クライアント)
-        # oauth2clientのcredsを使ってDrive APIを構築
         service = build('drive', 'v3', credentials=creds)
         
         return gc_client, service
@@ -88,17 +87,16 @@ def generate_and_upload_image(image_prompt, word_key, drive_service):
     
     try:
         # 2. 画像をダウンロード (メモリ上に保持)
-        # Pollinationsへのリクエスト (少し待つ場合があるためtimeout長め)
         response = requests.get(image_url, timeout=20)
         
         if response.status_code == 200:
             image_data = io.BytesIO(response.content)
             
             # 3. Google Driveにアップロード
-            # ファイル名を「単語_seed.jpg」にして重複防止
             file_metadata = {
                 'name': f"{word_key}_{seed}.jpg",
-                'mimeType': 'image/jpeg'
+                'mimeType': 'image/jpeg',
+                'parents': ['1dcbr2GIzWdJPhGDw_5VG2uS-_lYveKyo']  # ★ここにあなたのフォルダIDを設定済み★
             }
             media = MediaIoBaseUpload(image_data, mimetype='image/jpeg')
             
@@ -121,7 +119,6 @@ def generate_and_upload_image(image_prompt, word_key, drive_service):
             
     except Exception as e:
         st.warning(f"Image Upload Failed: {e}. Using direct link instead.")
-        # エラー時はPollinationsのURLをそのまま返す(保険)
         return image_url
     
     return image_url
@@ -133,7 +130,6 @@ def parse_pdf_to_structured_blocks(text):
     blocks = []
     current_text = ""
     current_type = "p"
-    # sentence_endings = ('.', ',', '!', '?', ':', ';', '"', "'", '”', '’', ')', ']') 
     for line in lines:
         line = line.strip()
         if not line: continue
@@ -320,7 +316,6 @@ else:
             else:
                 chunk = slot_data['chunk']
                 info = slot_data['info']
-                # アプリ上では画像を表示せず、サクサク感を維持
                 st.markdown(f"""
                 <div style="height: 12.8vh; border-left: 4px solid #2980b9; background-color: #f8fbff; padding: 8px; margin-bottom: 0.5vh; border-radius: 4px; overflow: hidden; display: flex; flex-direction: column; justify-content: center;">
                     <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:4px;">
@@ -359,7 +354,6 @@ else:
                         if drive_service:
                             final_image_url = generate_and_upload_image(image_prompt, target_word, drive_service)
                         else:
-                            # Drive接続失敗時
                             final_image_url = "" 
                 
                 # 4. シート保存
