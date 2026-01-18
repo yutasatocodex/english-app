@@ -24,24 +24,27 @@ def get_gspread_client():
     except:
         return None
 
-# --- 設定: OpenAI ---
-def analyze_chunk_with_gpt(target_word, context_sentence):
+# --- 設定: OpenAI (一文抽出ロジック強化) ---
+def analyze_chunk_with_gpt(target_word, context_text):
     client = OpenAI(api_key=st.secrets["openai"]["api_key"])
+    
+    # 指示：必ず「ターゲット単語を含む一文だけ」を抽出させる
     prompt = f"""
-    You are an expert English teacher.
-    The user is reading this text: "{context_sentence}"
-    The user clicked the word: "{target_word}"
+    The user is reading: "{context_text}"
+    Target word: "{target_word}"
 
-    Your task:
-    1. Identify the meaningful "chunk".
-    2. Provide IPA pronunciation.
-    3. Provide Japanese meaning (Concise).
+    Task:
+    1. Identify the chunk.
+    2. IPA pronunciation.
+    3. Japanese meaning (Concise).
+    4. Extract the ONE specific sentence containing the target word from the text.
 
-    Output MUST be a JSON object:
+    Output JSON:
     1. "chunk": English phrase.
     2. "pronunciation": IPA.
     3. "meaning": Japanese meaning.
     4. "pos": Part of Speech.
+    5. "original_sentence": The single sentence (ending with .?!) containing the word.
     """
     try:
         response = client.chat.completions.create(
@@ -54,7 +57,16 @@ def analyze_chunk_with_gpt(target_word, context_sentence):
         )
         return json.loads(response.choices[0].message.content)
     except Exception:
-        return {"chunk": target_word, "pronunciation": "", "meaning": "Error", "pos": "-"}
+        return {"chunk": target_word, "pronunciation": "", "meaning": "Error", "pos": "-", "original_sentence": ""}
+
+# --- 補助関数: 文脈から強制的に一文を切り出す ---
+def extract_sentence_python(text, word):
+    # ピリオド、感嘆符、疑問符で分割
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    for s in sentences:
+        if word in s:
+            return s.strip()
+    return text[:100] + "..." # 見つからない場合は短くカット
 
 # --- テキスト解析 ---
 def parse_pdf_to_structured_blocks(text):
@@ -91,7 +103,6 @@ def parse_pdf_to_structured_blocks(text):
     return blocks
 
 def group_blocks_into_screens(blocks, words_per_screen=500):
-    # 画面が広くなった分、文字数も増やす (450 -> 500)
     screens = []
     current_screen = []
     current_word_count = 0
@@ -122,10 +133,9 @@ if "all_screens" not in st.session_state:
 if "current_screen_index" not in st.session_state:
     st.session_state.current_screen_index = 0
 
-# --- CSS: 余白削除・全画面化 (最強設定) ---
+# --- CSS: 全画面化 (UIは前回のまま変更なし) ---
 st.markdown("""
 <style>
-    /* 1. Streamlit標準の余白を強制削除 */
     .block-container {
         padding-top: 0rem !important;
         padding-bottom: 0rem !important;
@@ -133,10 +143,7 @@ st.markdown("""
         padding-right: 0.5rem !important;
         max-width: 100% !important;
     }
-    /* ヘッダー等を消す */
     header, footer, #MainMenu {display: none !important;}
-    
-    /* 2. ボタンを極限まで小さく */
     .stButton button {
         height: 1.8em;
         line-height: 1;
@@ -144,11 +151,7 @@ st.markdown("""
         min-height: 0px;
         border: 1px solid #ccc;
     }
-    
-    /* 3. 全体背景を白に */
-    .stApp {
-        background-color: #ffffff;
-    }
+    .stApp { background-color: #ffffff; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -170,11 +173,9 @@ if not st.session_state.reader_mode:
         st.rerun()
 
 # ==========================================
-# 2. 読書画面 (超・全画面モード)
+# 2. 読書画面
 # ==========================================
 else:
-    # 上部ナビゲーション (高さ最小)
-    # 左右比率 4.5 : 1 に合わせるため、ここも調整
     nav_left, nav_right = st.columns([4.5, 1])
     
     with nav_left:
@@ -199,7 +200,6 @@ else:
                 st.session_state.slots = [None] * 7
                 st.rerun()
 
-    # メインコンテンツ (左右比率 4.5 : 1 で読書エリア最大化)
     col_read, col_dict = st.columns([4.5, 1])
 
     # --- 左: 読書エリア ---
@@ -213,18 +213,17 @@ else:
                     background-color: #fff;
                     border: 1px solid #ddd;
                     border-radius: 4px;
-                    padding: 30px 40px; /* 横の余白は確保 */
+                    padding: 30px 40px;
                     font-family: 'Georgia', serif;
                     font-size: 19px;     
                     line-height: 1.7;    
                     color: #2c3e50;
-                    height: 92vh; /* ★画面の92%まで広げる★ */
+                    height: 92vh;
                     overflow-y: auto;
                 }
                 .header-text { font-weight: bold; font-size: 1.4em; margin: 10px 0 15px 0; border-bottom: 2px solid #f0f0f0; }
                 .list-item { margin-left: 20px; margin-bottom: 5px; border-left: 3px solid #eee; padding-left: 10px; }
                 .p-text { margin-bottom: 20px; text-align: justify; }
-                
                 .w { text-decoration: none; color: #2c3e50; cursor: pointer; border-bottom: 1px dotted #ccc; }
                 .w:hover { color: #d35400; border-bottom: 2px solid #d35400; background-color: #fff3e0; }
                 
@@ -268,16 +267,13 @@ else:
 
     # --- 右: 辞書リスト ---
     with col_dict:
-        # 92vhの中に7個を均等配置 (約13vh/個)
-        # 隙間(margin-bottom)を考慮して調整
-        
         for i in range(7):
             slot_data = st.session_state.slots[i] if i < len(st.session_state.slots) else None
             
             if slot_data is None:
                 st.markdown(f"""
                 <div style="
-                    height: 12.8vh; /* 高さを最大活用 */
+                    height: 12.8vh;
                     margin-bottom: 0.5vh;
                     border: 1px dashed #f0f0f0;
                     border-radius: 4px;
@@ -290,7 +286,7 @@ else:
                 
                 st.markdown(f"""
                 <div style="
-                    height: 12.8vh; /* 高さを最大活用 */
+                    height: 12.8vh;
                     border-left: 4px solid #2980b9;
                     background-color: #f8fbff;
                     padding: 6px 8px;
@@ -314,9 +310,14 @@ else:
         if len(parts) == 2:
             target_word = parts[1]
             current_blocks = st.session_state.all_screens[st.session_state.current_screen_index]
-            context_sentence = " ".join([b["text"] for b in current_blocks])
+            context_text = " ".join([b["text"] for b in current_blocks])
             
-            result = analyze_chunk_with_gpt(target_word, context_sentence)
+            result = analyze_chunk_with_gpt(target_word, context_text)
+            
+            # ★修正点: AIが長い文を返してきた場合、Pythonで強制的に短くする★
+            original_sentence = result.get('original_sentence', '')
+            if not original_sentence or len(original_sentence) > 150:
+                original_sentence = extract_sentence_python(context_text, target_word)
             
             curr = st.session_state.slots
             curr.pop()
@@ -328,6 +329,6 @@ else:
                 try:
                     sheet = client.open(st.secrets["sheet_config"]["sheet_name"]).sheet1
                     meaning_full = f"{result['meaning']} ({result['pos']})"
-                    sheet.append_row([result['chunk'], result.get('pronunciation', ''), meaning_full, context_sentence[:300]+"..." ])
+                    sheet.append_row([result['chunk'], result.get('pronunciation', ''), meaning_full, original_sentence])
                 except: pass
             st.rerun()
