@@ -1,7 +1,7 @@
 import streamlit as st
 from pypdf import PdfReader
 import gspread
-from google.oauth2.service_account import Credentials # ★ここを最新版に修正
+from google.oauth2.service_account import Credentials
 from st_click_detector import click_detector
 import html
 import re
@@ -20,7 +20,7 @@ scope = [
 def get_gspread_client():
     try:
         creds_dict = dict(st.secrets["gcp_service_account"])
-        # ★ここを最新の書き方に修正 (oauth2client -> google-auth)
+        # 最新の認証方式 (google-auth)
         creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
         client = gspread.authorize(creds)
         return client
@@ -38,7 +38,7 @@ def analyze_chunk_with_gpt(target_word, context_text):
 
     Task:
     1. Identify the core word or idiom (Keep it short).
-    2. IPA pronunciation.
+    2. IPA pronunciation (e.g. /wɜːrd/).
     3. Japanese meaning (Concise).
     4. Extract the ONE specific sentence containing the target word.
 
@@ -131,7 +131,7 @@ st.markdown("""
     }
     .stApp { background-color: #ffffff; }
     
-    /* 右側の辞書カードのスタイル（極小・高密度） */
+    /* 右側の辞書カードスタイル */
     .dict-card {
         border-left: 4px solid #2980b9;
         background-color: #f8fbff;
@@ -145,7 +145,7 @@ st.markdown("""
         display: flex;
         justify-content: space-between;
         align-items: center;
-        margin-bottom: 2px;
+        margin-bottom: 0px;
     }
     .dict-word {
         font-weight: bold;
@@ -158,6 +158,13 @@ st.markdown("""
         background: #e1eff7;
         padding: 1px 4px;
         border-radius: 3px;
+    }
+    /* ★追加: 発音記号のスタイル */
+    .dict-pron {
+        font-family: 'Arial', sans-serif;
+        font-size: 0.8em;
+        color: #7f8c8d;
+        margin-bottom: 3px;
     }
     .dict-meaning {
         font-weight: 500;
@@ -276,6 +283,7 @@ else:
                         <span class="dict-word">{chunk}</span>
                         <span class="dict-pos">{info.get('pos')}</span>
                     </div>
+                    <div class="dict-pron">{info.get('pronunciation', '')}</div>
                     <div class="dict-meaning">{info.get('meaning')}</div>
                 </div>
                 """, unsafe_allow_html=True)
@@ -289,10 +297,8 @@ else:
             current_blocks = st.session_state.all_screens[st.session_state.current_screen_index]
             context_text = " ".join([b["text"] for b in current_blocks])
             
-            # AI分析 (高速)
+            # AI分析
             result = analyze_chunk_with_gpt(target_word, context_text)
-            
-            # 例文抽出 (保存用)
             original_sentence = result.get('original_sentence', '')
             
             # シート保存
