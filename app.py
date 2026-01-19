@@ -93,7 +93,7 @@ def analyze_chunk_with_gpt(target_word, context_text):
     except:
         return {"chunk": target_word, "pronunciation": "", "meaning": "Error", "pos": "-", "original_sentence": ""}
 
-# --- テキスト構造解析 (修正版: 誤判定防止) ---
+# --- テキスト構造解析 ---
 def parse_pdf_to_structured_blocks(text):
     if not text: return []
     lines = text.splitlines()
@@ -104,18 +104,10 @@ def parse_pdf_to_structured_blocks(text):
         line = line.strip()
         if not line: continue
         
-        # 箇条書きの判定
         is_bullet = re.match(r'^([•·\-\*]|\d+\.)', line)
-        
-        # ★修正: 記号を除去して判定 (例: "I" -> I)
         clean_line = line.replace('"', '').replace("'", "").strip()
-        
-        # 条件A: 明示的な見出しキーワード (Chapter, Section等)
         is_explicit_header = re.match(r'^(Chapter|Section|\d+\s+[A-Z])', line, re.IGNORECASE)
-        
-        # 条件B: 全て大文字 かつ 4文字以上 (これで I, THE, "I などを除外)
         is_shout_header = clean_line.isupper() and len(clean_line) >= 4
-        
         is_header = is_explicit_header or is_shout_header
         
         if is_header or is_bullet:
@@ -259,7 +251,7 @@ if not st.session_state.initialized:
         load_pdf(os.path.join(books_dir, last_book), last_book, last_page)
 
 # ==========================================
-# 1. 本棚画面
+# 1. 本棚画面 (サブフォルダ対応版)
 # ==========================================
 if not st.session_state.reader_mode:
     st.markdown("### 📚 AI Book Reader")
@@ -270,15 +262,27 @@ if not st.session_state.reader_mode:
         books_dir = "books"
         if not os.path.exists(books_dir):
             os.makedirs(books_dir)
-        pdf_files = [f for f in os.listdir(books_dir) if f.lower().endswith('.pdf')]
+        
+        # ★ここを修正: 再帰的にフォルダを探すロジックに変更
+        pdf_files = []
+        for root, dirs, files in os.walk(books_dir):
+            for file in files:
+                if file.lower().endswith(".pdf"):
+                    # booksフォルダからの相対パスを取得 (例: "HarryPotter/Vol1.pdf")
+                    full_path = os.path.join(root, file)
+                    rel_path = os.path.relpath(full_path, books_dir)
+                    pdf_files.append(rel_path)
+        
+        # 見やすさのためにソート
+        pdf_files.sort()
         
         if pdf_files:
-            selected_book = st.selectbox("Select a book:", pdf_files)
+            selected_book = st.selectbox("Select a book from your library:", pdf_files)
             if st.button("Start Reading"):
                 file_path = os.path.join(books_dir, selected_book)
                 load_pdf(file_path, selected_book, 0)
         else:
-            st.info("No books found in 'books/' folder.")
+            st.info("No books found in 'books/' folder (including subfolders).")
 
     with tab2:
         uploaded_file = st.file_uploader("Upload temporary PDF", type="pdf")
@@ -387,32 +391,4 @@ else:
 
     if clicked and clicked != st.session_state.last_clicked:
         st.session_state.last_clicked = clicked
-        parts = clicked.split("_", 1)
-        if len(parts) == 2:
-            target_word = parts[1]
-            current_blocks = st.session_state.all_screens[st.session_state.current_screen_index]
-            context_text = " ".join([b["text"] for b in current_blocks])
-            
-            result = analyze_chunk_with_gpt(target_word, context_text)
-            original_sentence = result.get('original_sentence', '')
-            
-            client = get_gspread_client()
-            if client:
-                try:
-                    sheet = client.open(st.secrets["sheet_config"]["sheet_name"]).sheet1
-                    meaning_full = f"{result['meaning']} ({result['pos']})"
-                    sheet.append_row([
-                        result['chunk'], 
-                        result.get('pronunciation', ''), 
-                        meaning_full, 
-                        original_sentence, 
-                        st.session_state.pdf_filename
-                    ])
-                except: pass
-            
-            curr = st.session_state.slots
-            curr.pop()
-            curr.insert(0, {"chunk": result["chunk"], "info": result})
-            st.session_state.slots = curr[:9] + [None] * (9 - len(curr))
-            
-            st.rerun()
+        parts = clicked.split("_",
