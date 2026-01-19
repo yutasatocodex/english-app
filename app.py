@@ -6,6 +6,7 @@ from st_click_detector import click_detector
 import html
 import re
 import json
+import os
 from openai import OpenAI
 
 # --- ページ設定 ---
@@ -27,7 +28,52 @@ def get_gspread_client():
         st.error(f"Google Auth Error: {e}")
         return None
 
-# --- 設定: OpenAI (分析ロジック) ---
+# --- 💾 進捗保存・読み込み機能 (New!) ---
+def get_progress_sheet():
+    client = get_gspread_client()
+    if not client: return None
+    try:
+        # シートを開く
+        sheet = client.open(st.secrets["sheet_config"]["sheet_name"])
+        # "Progress"というタブがあるか確認、なければ作る
+        try:
+            worksheet = sheet.worksheet("Progress")
+        except:
+            worksheet = sheet.add_worksheet(title="Progress", rows=10, cols=2)
+            worksheet.update('A1', [['LastBook', 'Page']]) # ヘッダー
+        return worksheet
+    except Exception as e:
+        return None
+
+def save_progress(filename, page_index):
+    """ページをめくるたびに呼び出される"""
+    ws = get_progress_sheet()
+    if ws:
+        try:
+            # A2にファイル名、B2にページ番号を保存
+            ws.update('A2:B2', [[filename, str(page_index)]])
+        except: pass
+
+def load_progress():
+    """アプリ起動時に呼び出される"""
+    ws = get_progress_sheet()
+    if ws:
+        try:
+            data = ws.get('A2:B2')
+            if data and len(data) > 0 and len(data[0]) >= 2:
+                return data[0][0], int(data[0][1]) # filename, page_index
+        except: pass
+    return None, 0
+
+def clear_progress():
+    """✕ボタンを押した時に呼び出される（次回は本棚から）"""
+    ws = get_progress_sheet()
+    if ws:
+        try:
+            ws.update('A2:B2', [['', '']])
+        except: pass
+
+# --- 設定: OpenAI ---
 def analyze_chunk_with_gpt(target_word, context_text):
     client = OpenAI(api_key=st.secrets["openai"]["api_key"])
     
@@ -113,11 +159,12 @@ if "all_screens" not in st.session_state:
     st.session_state.all_screens = []
 if "current_screen_index" not in st.session_state:
     st.session_state.current_screen_index = 0
-# ★追加: PDFファイル名を保存する変数
 if "pdf_filename" not in st.session_state:
     st.session_state.pdf_filename = ""
+if "initialized" not in st.session_state:
+    st.session_state.initialized = False
 
-# --- CSS: シンプル & コンパクト ---
+# --- CSS ---
 st.markdown("""
 <style>
     .block-container {
@@ -176,24 +223,63 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 1. 初期画面
+# 0. アプリ起動時の自動読み込みチェック
 # ==========================================
-if not st.session_state.reader_mode:
-    st.markdown("### 📚 AI Book Reader (Simple)")
-    uploaded_file = st.file_uploader("Upload PDF", type="pdf")
-    if uploaded_file is not None:
-        # ★ここでファイル名を保存
-        st.session_state.pdf_filename = uploaded_file.name
-        
-        reader = PdfReader(uploaded_file)
+def load_pdf(file_source, filename, start_page=0):
+    with st.spinner(f"Opening {filename}..."):
+        reader = PdfReader(file_source)
         full_text = ""
         for page in reader.pages:
             full_text += page.extract_text() + "\n"
         structured_blocks = parse_pdf_to_structured_blocks(full_text)
         st.session_state.all_screens = group_blocks_into_screens(structured_blocks, words_per_screen=500)
-        st.session_state.current_screen_index = 0
+        
+        # ページ指定があればそこへ、なければ0
+        if start_page < len(st.session_state.all_screens):
+            st.session_state.current_screen_index = start_page
+        else:
+            st.session_state.current_screen_index = 0
+            
+        st.session_state.pdf_filename = filename
         st.session_state.reader_mode = True
         st.rerun()
+
+# 初回ロード時のみ実行
+if not st.session_state.initialized:
+    st.session_state.initialized = True
+    last_book, last_page = load_progress()
+    
+    # 最後に読んでいた本があり、かつそのファイルが books/ に実在する場合のみ自動ロード
+    books_dir = "books"
+    if last_book and os.path.exists(os.path.join(books_dir, last_book)):
+        load_pdf(os.path.join(books_dir, last_book), last_book, last_page)
+
+# ==========================================
+# 1. 本棚画面 (Reader Modeでない時)
+# ==========================================
+if not st.session_state.reader_mode:
+    st.markdown("### 📚 AI Book Reader")
+    
+    tab1, tab2 = st.tabs(["📖 Bookshelf", "📂 Upload"])
+    
+    with tab1:
+        books_dir = "books"
+        if not os.path.exists(books_dir):
+            os.makedirs(books_dir)
+        pdf_files = [f for f in os.listdir(books_dir) if f.lower().endswith('.pdf')]
+        
+        if pdf_files:
+            selected_book = st.selectbox("Select a book:", pdf_files)
+            if st.button("Start Reading"):
+                file_path = os.path.join(books_dir, selected_book)
+                load_pdf(file_path, selected_book, 0) # 最初から読む
+        else:
+            st.info("No books found in 'books/' folder.")
+
+    with tab2:
+        uploaded_file = st.file_uploader("Upload temporary PDF", type="pdf")
+        if uploaded_file is not None:
+            load_pdf(uploaded_file, uploaded_file.name, 0)
 
 # ==========================================
 # 2. 読書画面
@@ -207,20 +293,25 @@ else:
             if st.button("◀", key="prev"):
                 if st.session_state.current_screen_index > 0:
                     st.session_state.current_screen_index -= 1
+                    # ★ページめくりのタイミングで保存
+                    save_progress(st.session_state.pdf_filename, st.session_state.current_screen_index)
                     st.rerun()
         with c2:
             if st.button("▶", key="next"):
                 if st.session_state.current_screen_index < len(st.session_state.all_screens) - 1:
                     st.session_state.current_screen_index += 1
+                    # ★ページめくりのタイミングで保存
+                    save_progress(st.session_state.pdf_filename, st.session_state.current_screen_index)
                     st.rerun()
         with c3:
             curr = st.session_state.current_screen_index + 1
             total = len(st.session_state.all_screens)
-            # ファイル名を少し表示しておくと分かりやすい
             fname = st.session_state.pdf_filename
             st.markdown(f"<span style='color:#999; font-size:0.8em; margin-left:10px;'>Page {curr}/{total} | {fname}</span>", unsafe_allow_html=True)
         with c4:
              if st.button("✕", key="close"):
+                # ★閉じるボタンを押したら、進捗をクリアして次回は本棚から
+                clear_progress()
                 st.session_state.reader_mode = False
                 st.session_state.slots = [None] * 9
                 st.rerun()
@@ -312,13 +403,12 @@ else:
                 try:
                     sheet = client.open(st.secrets["sheet_config"]["sheet_name"]).sheet1
                     meaning_full = f"{result['meaning']} ({result['pos']})"
-                    # ★ここでE列にファイル名を保存
                     sheet.append_row([
                         result['chunk'], 
                         result.get('pronunciation', ''), 
                         meaning_full, 
                         original_sentence, 
-                        st.session_state.pdf_filename # <--- ファイル名！
+                        st.session_state.pdf_filename
                     ])
                 except: pass
             
