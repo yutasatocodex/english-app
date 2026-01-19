@@ -93,7 +93,7 @@ def analyze_chunk_with_gpt(target_word, context_text):
     except:
         return {"chunk": target_word, "pronunciation": "", "meaning": "Error", "pos": "-", "original_sentence": ""}
 
-# --- テキスト構造解析 (★ここを修正しました) ---
+# --- テキスト構造解析 (修正版: 誤判定防止) ---
 def parse_pdf_to_structured_blocks(text):
     if not text: return []
     lines = text.splitlines()
@@ -104,10 +104,19 @@ def parse_pdf_to_structured_blocks(text):
         line = line.strip()
         if not line: continue
         
+        # 箇条書きの判定
         is_bullet = re.match(r'^([•·\-\*]|\d+\.)', line)
         
-        # ★修正: 1文字だけの大文字(I, Aなど)は見出しとみなさないように条件を追加 (len(line) > 1)
-        is_header = (line.isupper() and len(line) > 1) or re.match(r'^(Chapter|Section|\d+\s+[A-Z])', line, re.IGNORECASE)
+        # ★修正: 記号を除去して判定 (例: "I" -> I)
+        clean_line = line.replace('"', '').replace("'", "").strip()
+        
+        # 条件A: 明示的な見出しキーワード (Chapter, Section等)
+        is_explicit_header = re.match(r'^(Chapter|Section|\d+\s+[A-Z])', line, re.IGNORECASE)
+        
+        # 条件B: 全て大文字 かつ 4文字以上 (これで I, THE, "I などを除外)
+        is_shout_header = clean_line.isupper() and len(clean_line) >= 4
+        
+        is_header = is_explicit_header or is_shout_header
         
         if is_header or is_bullet:
             if current_text:
@@ -241,6 +250,7 @@ def load_pdf(file_source, filename, start_page=0):
         st.session_state.reader_mode = True
         st.rerun()
 
+# 初回起動時: 続きがあれば自動再開
 if not st.session_state.initialized:
     st.session_state.initialized = True
     last_book, last_page = load_progress()
