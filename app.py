@@ -391,4 +391,32 @@ else:
 
     if clicked and clicked != st.session_state.last_clicked:
         st.session_state.last_clicked = clicked
-        parts = clicked.split("_",
+        parts = clicked.split("_", 1)
+        if len(parts) == 2:
+            target_word = parts[1]
+            current_blocks = st.session_state.all_screens[st.session_state.current_screen_index]
+            context_text = " ".join([b["text"] for b in current_blocks])
+            
+            result = analyze_chunk_with_gpt(target_word, context_text)
+            original_sentence = result.get('original_sentence', '')
+            
+            client = get_gspread_client()
+            if client:
+                try:
+                    sheet = client.open(st.secrets["sheet_config"]["sheet_name"]).sheet1
+                    meaning_full = f"{result['meaning']} ({result['pos']})"
+                    sheet.append_row([
+                        result['chunk'], 
+                        result.get('pronunciation', ''), 
+                        meaning_full, 
+                        original_sentence, 
+                        st.session_state.pdf_filename
+                    ])
+                except: pass
+            
+            curr = st.session_state.slots
+            curr.pop()
+            curr.insert(0, {"chunk": result["chunk"], "info": result})
+            st.session_state.slots = curr[:9] + [None] * (9 - len(curr))
+            
+            st.rerun()
