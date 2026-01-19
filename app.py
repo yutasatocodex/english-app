@@ -28,45 +28,39 @@ def get_gspread_client():
         st.error(f"Google Auth Error: {e}")
         return None
 
-# --- 💾 進捗保存・読み込み機能 (New!) ---
+# --- 💾 進捗保存・読み込み機能 ---
 def get_progress_sheet():
     client = get_gspread_client()
     if not client: return None
     try:
-        # シートを開く
         sheet = client.open(st.secrets["sheet_config"]["sheet_name"])
-        # "Progress"というタブがあるか確認、なければ作る
         try:
             worksheet = sheet.worksheet("Progress")
         except:
             worksheet = sheet.add_worksheet(title="Progress", rows=10, cols=2)
-            worksheet.update('A1', [['LastBook', 'Page']]) # ヘッダー
+            worksheet.update('A1', [['LastBook', 'Page']]) 
         return worksheet
     except Exception as e:
         return None
 
 def save_progress(filename, page_index):
-    """ページをめくるたびに呼び出される"""
     ws = get_progress_sheet()
     if ws:
         try:
-            # A2にファイル名、B2にページ番号を保存
             ws.update('A2:B2', [[filename, str(page_index)]])
         except: pass
 
 def load_progress():
-    """アプリ起動時に呼び出される"""
     ws = get_progress_sheet()
     if ws:
         try:
             data = ws.get('A2:B2')
             if data and len(data) > 0 and len(data[0]) >= 2:
-                return data[0][0], int(data[0][1]) # filename, page_index
+                return data[0][0], int(data[0][1])
         except: pass
     return None, 0
 
 def clear_progress():
-    """✕ボタンを押した時に呼び出される（次回は本棚から）"""
     ws = get_progress_sheet()
     if ws:
         try:
@@ -99,7 +93,7 @@ def analyze_chunk_with_gpt(target_word, context_text):
     except:
         return {"chunk": target_word, "pronunciation": "", "meaning": "Error", "pos": "-", "original_sentence": ""}
 
-# --- テキスト構造解析 ---
+# --- テキスト構造解析 (★ここを修正しました) ---
 def parse_pdf_to_structured_blocks(text):
     if not text: return []
     lines = text.splitlines()
@@ -109,8 +103,12 @@ def parse_pdf_to_structured_blocks(text):
     for line in lines:
         line = line.strip()
         if not line: continue
+        
         is_bullet = re.match(r'^([•·\-\*]|\d+\.)', line)
-        is_header = line.isupper() or re.match(r'^(Chapter|Section|\d+\s+[A-Z])', line, re.IGNORECASE)
+        
+        # ★修正: 1文字だけの大文字(I, Aなど)は見出しとみなさないように条件を追加 (len(line) > 1)
+        is_header = (line.isupper() and len(line) > 1) or re.match(r'^(Chapter|Section|\d+\s+[A-Z])', line, re.IGNORECASE)
+        
         if is_header or is_bullet:
             if current_text:
                 blocks.append({"type": current_type, "text": current_text})
@@ -223,7 +221,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 0. アプリ起動時の自動読み込みチェック
+# 0. 自動読み込みロジック
 # ==========================================
 def load_pdf(file_source, filename, start_page=0):
     with st.spinner(f"Opening {filename}..."):
@@ -234,7 +232,6 @@ def load_pdf(file_source, filename, start_page=0):
         structured_blocks = parse_pdf_to_structured_blocks(full_text)
         st.session_state.all_screens = group_blocks_into_screens(structured_blocks, words_per_screen=500)
         
-        # ページ指定があればそこへ、なければ0
         if start_page < len(st.session_state.all_screens):
             st.session_state.current_screen_index = start_page
         else:
@@ -244,18 +241,15 @@ def load_pdf(file_source, filename, start_page=0):
         st.session_state.reader_mode = True
         st.rerun()
 
-# 初回ロード時のみ実行
 if not st.session_state.initialized:
     st.session_state.initialized = True
     last_book, last_page = load_progress()
-    
-    # 最後に読んでいた本があり、かつそのファイルが books/ に実在する場合のみ自動ロード
     books_dir = "books"
     if last_book and os.path.exists(os.path.join(books_dir, last_book)):
         load_pdf(os.path.join(books_dir, last_book), last_book, last_page)
 
 # ==========================================
-# 1. 本棚画面 (Reader Modeでない時)
+# 1. 本棚画面
 # ==========================================
 if not st.session_state.reader_mode:
     st.markdown("### 📚 AI Book Reader")
@@ -272,7 +266,7 @@ if not st.session_state.reader_mode:
             selected_book = st.selectbox("Select a book:", pdf_files)
             if st.button("Start Reading"):
                 file_path = os.path.join(books_dir, selected_book)
-                load_pdf(file_path, selected_book, 0) # 最初から読む
+                load_pdf(file_path, selected_book, 0)
         else:
             st.info("No books found in 'books/' folder.")
 
@@ -293,14 +287,12 @@ else:
             if st.button("◀", key="prev"):
                 if st.session_state.current_screen_index > 0:
                     st.session_state.current_screen_index -= 1
-                    # ★ページめくりのタイミングで保存
                     save_progress(st.session_state.pdf_filename, st.session_state.current_screen_index)
                     st.rerun()
         with c2:
             if st.button("▶", key="next"):
                 if st.session_state.current_screen_index < len(st.session_state.all_screens) - 1:
                     st.session_state.current_screen_index += 1
-                    # ★ページめくりのタイミングで保存
                     save_progress(st.session_state.pdf_filename, st.session_state.current_screen_index)
                     st.rerun()
         with c3:
@@ -310,7 +302,6 @@ else:
             st.markdown(f"<span style='color:#999; font-size:0.8em; margin-left:10px;'>Page {curr}/{total} | {fname}</span>", unsafe_allow_html=True)
         with c4:
              if st.button("✕", key="close"):
-                # ★閉じるボタンを押したら、進捗をクリアして次回は本棚から
                 clear_progress()
                 st.session_state.reader_mode = False
                 st.session_state.slots = [None] * 9
@@ -384,7 +375,6 @@ else:
                 </div>
                 """, unsafe_allow_html=True)
 
-    # --- クリック処理 ---
     if clicked and clicked != st.session_state.last_clicked:
         st.session_state.last_clicked = clicked
         parts = clicked.split("_", 1)
@@ -393,11 +383,9 @@ else:
             current_blocks = st.session_state.all_screens[st.session_state.current_screen_index]
             context_text = " ".join([b["text"] for b in current_blocks])
             
-            # AI分析
             result = analyze_chunk_with_gpt(target_word, context_text)
             original_sentence = result.get('original_sentence', '')
             
-            # シート保存
             client = get_gspread_client()
             if client:
                 try:
